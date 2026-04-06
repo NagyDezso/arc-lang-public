@@ -1,4 +1,4 @@
-from src.configs.models import Model, RunConfig, Step, StepRevision, StepRevisionPool
+from src.configs.models import Model, RunConfig, Step, StepRevisionPool
 
 oss_model = Model.openrouter_gpt_oss_120b
 

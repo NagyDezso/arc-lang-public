@@ -9,7 +9,6 @@ from openai.types.responses.response import Response
 from src.llms.models import Model
 from src.log import log
 
-
 RESPONSES_EXTRA_HEADERS = {"OpenAI-Beta": "responses=v2"}
 POLL_TERMINAL_STATUSES = {
     "completed",

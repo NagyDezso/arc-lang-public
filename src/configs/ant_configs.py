@@ -1,4 +1,4 @@
-from src.configs.models import Model, RunConfig, Step, StepRevision, StepRevisionPool
+from src.configs.models import Model, RunConfig, Step, StepRevisionPool
 
 sonnet_4_5_config_prod = RunConfig(
     final_follow_model=Model.sonnet_4_5,

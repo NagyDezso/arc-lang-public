@@ -1,18 +1,22 @@
 import os
 import typing as T
-from copy import deepcopy
 
 from anthropic import AsyncAnthropic
-from devtools import debug
 from google import genai
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
-from src.llms.models import Model, model_config
+from src.llms.models import (
+    LMSTUDIO_OPENAI_BASE_URL,
+    Model,
+    model_config,
+)
 from src.llms.openai_responses import (
     OPENAI_MODEL_MAX_OUTPUT_TOKENS,
     create_and_poll_response,
 )
+
+COPILOT_BASE_URL = "http://localhost:4141/v1"
 
 
 class GridOutput(BaseModel):
@@ -21,7 +25,7 @@ class GridOutput(BaseModel):
 
 def _extract_output_text(response: T.Any) -> str:
     if hasattr(response, "output_text"):
-        output_text = getattr(response, "output_text")
+        output_text = response.output_text
         if isinstance(output_text, str) and output_text.strip():
             return output_text
 
@@ -133,6 +137,30 @@ async def get_next_message_openrouter(
     return completion.choices[0].message.content
 
 
+async def get_next_message_copilot(
+    model: Model,
+    inputs: list[dict[str, str]],
+) -> str:
+    client = AsyncOpenAI(
+        api_key=os.environ.get("COPILOT_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or "copilot",
+        timeout=500,
+        max_retries=10,
+        base_url=COPILOT_BASE_URL,
+    )
+    completion = await client.chat.completions.create(
+        model=model.value,
+        max_tokens=50_000,
+        messages=inputs,
+        temperature=1,
+    )
+    content = completion.choices[0].message.content
+    if not content:
+        raise ValueError(f"Empty response from Copilot model {model.value}")
+    return content
+
+
 async def get_next_message_deepseek(
     model: Model,
     inputs: list[dict[str, str]],
@@ -150,6 +178,50 @@ async def get_next_message_deepseek(
     )
     # debug(response)
     return response.choices[0].message.content
+
+
+async def get_next_message_lmstudio(
+    model: Model,
+    inputs: list[dict[str, str]],
+) -> str:
+    client = AsyncOpenAI(
+        api_key=os.environ.get("LMSTUDIO_API_KEY", "lm-studio"),
+        timeout=10_800,
+        max_retries=10,
+        base_url=LMSTUDIO_OPENAI_BASE_URL,
+    )
+    api_model = model.value
+    completion = await client.chat.completions.create(
+        model=api_model,
+        messages=inputs,
+        temperature=1,
+    )
+    content = completion.choices[0].message.content
+    if not content:
+        raise ValueError(f"Empty response from LM Studio model {model.value}")
+    return content
+
+
+async def get_next_message_kilo(
+    model: Model,
+    inputs: list[dict[str, str]],
+) -> str:
+    client = AsyncOpenAI(
+        api_key=os.environ["KILO_API_KEY"],
+        timeout=500,
+        max_retries=10,
+        base_url="https://api.kilo.ai/api/gateway",
+    )
+    completion = await client.chat.completions.create(
+        model=model.value,
+        max_tokens=50_000,
+        messages=inputs,
+        temperature=1,
+    )
+    content = completion.choices[0].message.content
+    if not content:
+        raise ValueError(f"Empty response from Kilo model {model.value}")
+    return content
 
 
 async def get_next_message_anthropic(

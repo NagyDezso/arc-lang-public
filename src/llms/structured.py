@@ -4,23 +4,32 @@ import functools
 import json
 import os
 import random
+import re
 import time
 import typing as T
 
+import httpx
 from anthropic import AsyncAnthropic
 from devtools import debug
-from google import genai
+from google.genai import Client as GoogleGenAI
+from google.genai.types import GenerateContentConfig, ThinkingConfig
 from openai import AsyncOpenAI
+from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.completion_create_params import ResponseFormat
+from openai.types.completion_usage import CompletionUsage
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
-import httpx
 from pydantic_ai.providers.gateway import gateway_provider
 from xai_sdk import AsyncClient as XaiAsyncClient
 from xai_sdk.chat import assistant, image, system, user
 
 from src.async_utils.semaphore_monitor import MonitoredSemaphore
-from src.llms.models import Model
+from src.llms.models import (
+    LMSTUDIO_OPENAI_BASE_URL,
+    Model,
+)
 from src.llms.openai_responses import (
     OPENAI_MODEL_MAX_OUTPUT_TOKENS,
     create_and_poll_response,
@@ -34,6 +43,7 @@ BMType = T.TypeVar("BMType", bound=BaseModel)
 
 P = T.ParamSpec("P")
 R = T.TypeVar("R")
+COPILOT_BASE_URL = "http://localhost:4141/v1"
 
 
 def retry_with_backoff(
@@ -82,6 +92,7 @@ def retry_with_backoff(
                         or "524" in msg  # Cloudflare timeout
                         or "timeout" in msg.lower()
                         or "ServerError" in msg
+                        or "Provider returned error" in msg
                     )
                     if "StatusCode.DEADLINE_EXCEEDED" in msg:
                         retryable = False
@@ -103,8 +114,27 @@ def retry_with_backoff(
                         raise
 
                     # ---- full-jitter exponential back-off ----
-                    base_wait = min(base_delay * 2 ** (attempt - 1), max_delay)
-                    wait = random.uniform(0, base_wait)
+                    retry_after_seconds: float | None = None
+                    retry_after_match = re.search(
+                        r"Please try again in ([0-9]*\.?[0-9]+)\s*(ms|s)\.?",
+                        msg,
+                        re.IGNORECASE,
+                    )
+                    if retry_after_match:
+                        retry_after_value = float(retry_after_match.group(1))
+                        retry_after_unit = retry_after_match.group(2).lower()
+                        retry_after_seconds = (
+                            retry_after_value / 1000
+                            if retry_after_unit == "ms"
+                            else retry_after_value
+                        )
+                        retry_after_seconds = max(retry_after_seconds, 0.05)
+
+                    if retry_after_seconds is not None:
+                        wait = retry_after_seconds
+                    else:
+                        base_wait = min(base_delay * 2 ** (attempt - 1), max_delay)
+                        wait = random.uniform(0, base_wait)
 
                     log.warn(
                         "retry_attempt",
@@ -125,26 +155,44 @@ def retry_with_backoff(
     return decorator
 
 
-openai_client = AsyncOpenAI(
-    api_key=os.environ["OPENAI_API_KEY"], timeout=10_800, max_retries=2
-)
-anthropic_client = AsyncAnthropic(
-    api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=3_010, max_retries=2
-)
-deepseek_client = AsyncOpenAI(
-    api_key=os.environ["DEEPSEEK_API_KEY"],
-    base_url="https://api.deepseek.com",
+# openai_client = AsyncOpenAI(
+#     api_key=os.environ["OPENAI_API_KEY"], timeout=10_800, max_retries=2
+# )
+# anthropic_client = AsyncAnthropic(
+#     api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=3_010, max_retries=2
+# )
+# deepseek_client = AsyncOpenAI(
+#     api_key=os.environ["DEEPSEEK_API_KEY"],
+#     base_url="https://api.deepseek.com",
+#     timeout=2500,
+#     max_retries=2,
+# )
+# openrouter_client = AsyncOpenAI(
+#     api_key=os.environ["OPENROUTER_API_KEY"],
+#     base_url="https://openrouter.ai/api/v1",
+#     timeout=2500,
+#     max_retries=2,
+# )
+groq_client = AsyncOpenAI(
+    api_key=os.environ["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1",
     timeout=2500,
     max_retries=2,
 )
-openrouter_client = AsyncOpenAI(
-    api_key=os.environ["OPENROUTER_API_KEY"],
-    base_url="https://openrouter.ai/api/v1",
-    timeout=2500,
-    max_retries=2,
-)
-gemini_client = genai.Client(
+gemini_client = GoogleGenAI(
     api_key=os.environ["GEMINI_API_KEY"],
+)
+kilo_client = AsyncOpenAI(
+    api_key=os.environ["KILO_API_KEY"],
+    base_url="https://api.kilo.ai/api/gateway",
+    timeout=2500,
+    max_retries=2,
+)
+lmstudio_client = AsyncOpenAI(
+    api_key=os.environ.get("LMSTUDIO_API_KEY", "lm-studio"),
+    base_url=LMSTUDIO_OPENAI_BASE_URL,
+    timeout=10_800,
+    max_retries=2,
 )
 
 # Semaphore to limit concurrent API calls to 100
@@ -188,6 +236,12 @@ async def get_next_structure(
                 res = await _get_next_structure_openai(
                     structure=structure, model=model, messages=messages
                 )
+            elif model in [
+                Model.copilot_gpt_5_mini,
+            ]:
+                res = await _get_next_structure_copilot(
+                    structure=structure, model=model, messages=messages
+                )
             elif model in [Model.sonnet_4, Model.opus_4, Model.sonnet_4_5]:
                 res = await _get_next_structure_anthropic(
                     structure=structure, model=model, messages=messages
@@ -204,6 +258,7 @@ async def get_next_structure(
                 Model.gemini_2_5,
                 Model.gemini_2_5_flash_lite,
                 Model.gemini_3_pro,
+                Model.gemini_3_flash,
             ]:
                 res = await _get_next_structure_gemini(
                     structure=structure, model=model, messages=messages
@@ -212,27 +267,15 @@ async def get_next_structure(
                 res = await _get_next_structure_pydantic_gateway(
                     structure=structure, model=model, messages=messages
                 )
-            elif model in [
-                Model.openrouter_sonnet_3_7_thinking,
-                Model.openrouter_sonnet_3_7,
-                Model.openrouter_gemini_2_5_free,
-                Model.openrouter_gemini_2_5,
-                Model.openrouter_deepseek_3_free,
-                Model.openrouter_deepseek_r1,
-                Model.openrouter_deepseek_r1_free,
-                Model.openrouter_grok_v3,
-                Model.openrouter_quasar_alpha,
-                Model.openrouter_optimus_alpha,
-                Model.openrouter_qwen_235b,
-                Model.openrouter_qwen_235b_thinking,
-                Model.openrouter_gemini_2_5_flash_lite,
-                Model.openrouter_glm,
-                Model.openrouter_kimi_k2,
-                Model.openrouter_grok_4,
-                Model.openrouter_horizon_alpha,
-                Model.openrouter_gpt_oss_120b,
-                Model.gemini_3_pro_openrouter,
-            ]:
+            elif model.name.startswith("kilo"):
+                res = await _get_next_structure_kilo(
+                    structure=structure, model=model, messages=messages
+                )
+            elif model.name.startswith("lmstudio"):
+                res = await _get_next_structure_lmstudio(
+                    structure=structure, model=model, messages=messages
+                )
+            elif model.name.startswith("openrouter"):
                 res = await _get_next_structure_openrouter(
                     structure=structure, model=model, messages=messages
                 )
@@ -269,7 +312,14 @@ async def _get_next_structure_openai(
     messages: list,
 ) -> BMType:
     reasoning: dict[str, str] | None = None
-    if model in [Model.o3, Model.o4_mini, Model.o3_pro, Model.gpt_5, Model.gpt_52, Model.gpt_5_pro]:
+    if model in [
+        Model.o3,
+        Model.o4_mini,
+        Model.o3_pro,
+        Model.gpt_5,
+        Model.gpt_52,
+        Model.gpt_5_pro,
+    ]:
         reasoning = {"effort": "high"}
 
     max_output_tokens = OPENAI_MODEL_MAX_OUTPUT_TOKENS.get(model, 128_000)
@@ -294,31 +344,32 @@ async def _get_next_structure_openai(
     if reasoning:
         create_kwargs["reasoning"] = reasoning
 
+    openai_client = AsyncOpenAI(
+        api_key=os.environ["OPENAI_API_KEY"], timeout=10_800, max_retries=2
+    )
     raw_response = await create_and_poll_response(
         openai_client,
         model=model,
         create_kwargs=create_kwargs,
     )
-
-    usage = raw_response.usage or {}
-    input_token_details = getattr(usage, "input_token_details", None) or {}
-    output_token_details = getattr(usage, "output_tokens_details", None) or {}
-
-    openai_usage = OpenAIUsage(
-        completion_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-        prompt_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-        total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
-        reasoning_tokens=int(getattr(output_token_details, "reasoning_tokens", 0) or 0),
-        cached_prompt_tokens=int(getattr(input_token_details, "cached_tokens", 0) or 0),
-    )
+    openai_usage = OpenAIUsage()
+    if raw_response.usage:
+        u = raw_response.usage
+        openai_usage = OpenAIUsage(
+            output_tokens=u.output_tokens,
+            input_tokens=u.input_tokens,
+            total_tokens=u.total_tokens,
+            reasoning_tokens=u.output_tokens_details.reasoning_tokens,
+            cached_prompt_tokens=u.input_tokens_details.cached_tokens,
+        )
 
     log.debug(
         "openai_usage",
         model=model.value,
         usage=openai_usage.model_dump(),
         cents=openai_usage.cents(model=model),
-        finish_reason=getattr(raw_response, "finish_reason", None),
-        reasoning_content=getattr(raw_response, "reasoning", None),
+        response_status=raw_response.status,
+        reasoning=raw_response.reasoning,
     )
 
     if model in [Model.o3_pro]:
@@ -396,6 +447,9 @@ async def _get_next_structure_anthropic(
     model: Model,
     messages: list,
 ) -> BMType:
+    anthropic_client = AsyncAnthropic(
+        api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=3_010, max_retries=2
+    )
     tool_schema = structure.model_json_schema()
     messages = update_messages_anthropic(messages=messages)
     response = await anthropic_client.messages.create(
@@ -494,6 +548,11 @@ MODEL_PRICING_D: dict[Model, ModelPricing] = {
         reasoning_tokens=300 / 1_000_000,  # $0.30 per 1M tokens
         completion_tokens=300 / 1_000_000,  # $0.30 per 1M tokens
     ),
+    Model.gemini_3_flash: ModelPricing(
+        prompt_tokens=2_500 / 1_000_000,  # $2.50 per 1M tokens (estimate)
+        reasoning_tokens=15_000 / 1_000_000,  # $15 per 1M tokens (thinking, estimate)
+        completion_tokens=15_000 / 1_000_000,  # $15 per 1M tokens (estimate)
+    ),
     Model.gemini_3_pro: ModelPricing(
         prompt_tokens=2_500 / 1_000_000,  # $2.50 per 1M tokens (estimate)
         reasoning_tokens=15_000 / 1_000_000,  # $15 per 1M tokens (thinking, estimate)
@@ -508,8 +567,14 @@ MODEL_PRICING_D: dict[Model, ModelPricing] = {
     # OpenRouter Gemini 3 Pro - $2/M input, $12/M output (from OpenRouter)
     Model.gemini_3_pro_openrouter: ModelPricing(
         prompt_tokens=2_000 / 1_000_000,  # $2 per 1M tokens
-        reasoning_tokens=0 / 1_000_000,  # OpenRouter doesn't charge separately for reasoning
+        reasoning_tokens=0
+        / 1_000_000,  # OpenRouter doesn't charge separately for reasoning
         completion_tokens=12_000 / 1_000_000,  # $12 per 1M tokens
+    ),
+    Model.lmstudio_qwen_3_5_27b: ModelPricing(
+        prompt_tokens=0.0,
+        reasoning_tokens=0.0,
+        completion_tokens=0.0,
     ),
 }
 
@@ -532,9 +597,9 @@ class GrokUsage(BaseModel):
 
 
 class OpenAIUsage(BaseModel):
-    completion_tokens: int
-    prompt_tokens: int
-    total_tokens: int
+    output_tokens: int = 0
+    input_tokens: int = 0
+    total_tokens: int = 0
     reasoning_tokens: int = 0
     cached_prompt_tokens: int = 0
 
@@ -543,11 +608,35 @@ class OpenAIUsage(BaseModel):
             return 0.0
         pricing = MODEL_PRICING_D[model]
         return round(
-            self.prompt_tokens * pricing.prompt_tokens
+            self.input_tokens * pricing.prompt_tokens
             + self.reasoning_tokens * pricing.reasoning_tokens
-            + self.completion_tokens * pricing.completion_tokens,
+            + self.output_tokens * pricing.completion_tokens,
             2,
         )
+
+
+def _optional_int(n: int | None) -> int:
+    return 0 if n is None else n
+
+
+def _openai_usage_from_completion_usage(usage: CompletionUsage | None) -> OpenAIUsage:
+    if usage is None:
+        return OpenAIUsage()
+    comp = usage.completion_tokens_details
+    prompt = usage.prompt_tokens_details
+    return OpenAIUsage(
+        output_tokens=usage.completion_tokens,
+        input_tokens=usage.prompt_tokens,
+        total_tokens=usage.total_tokens,
+        reasoning_tokens=_optional_int(comp.reasoning_tokens) if comp else 0,
+        cached_prompt_tokens=_optional_int(prompt.cached_tokens) if prompt else 0,
+    )
+
+
+def _chat_message_reasoning_content(msg: ChatCompletionMessage) -> str | None:
+    """LM Studio and some servers add `reasoning_content`; it is not on the base OpenAI type."""
+    extra = getattr(msg, "reasoning_content", None)
+    return extra if isinstance(extra, str) else None
 
 
 class GeminiUsage(BaseModel):
@@ -577,28 +666,6 @@ async def _get_next_structure_xai(
 ) -> BMType:
     messages = update_messages_xai(messages=messages)
 
-    # Configure retry policy for rate limiting
-    # use decorator from now on
-    custom_retry_policy = json.dumps(
-        {
-            "methodConfig": [
-                {
-                    "name": [{}],
-                    "retryPolicy": {
-                        "maxAttempts": 5,
-                        "initialBackoff": "1s",
-                        "maxBackoff": "60s",
-                        "backoffMultiplier": 2.0,
-                        "retryableStatusCodes": [
-                            "UNAVAILABLE",
-                            "RESOURCE_EXHAUSTED",
-                            # "DEADLINE_EXCEEDED",
-                        ],
-                    },
-                }
-            ]
-        }
-    )
     api_keys = os.environ["XAI_API_KEY"].split(",")
     xai_client = XaiAsyncClient(
         api_key=random.choice(api_keys),
@@ -682,8 +749,12 @@ async def _get_next_structure_deepseek(
     model: Model,
     messages: list,
 ) -> BMType:
-    import json
-
+    deepseek_client = AsyncOpenAI(
+        api_key=os.environ["DEEPSEEK_API_KEY"],
+        base_url="https://api.deepseek.com",
+        timeout=2500,
+        max_retries=2,
+    )
     messages = update_messages_deepseek(messages=messages, structure=structure)
 
     # Use JSON mode
@@ -708,8 +779,58 @@ async def _get_next_structure_deepseek(
         raise Exception(f"Failed to parse JSON response: {e}\nResponse: {content}")
 
 
+@retry_with_backoff(max_retries=20)
+async def _get_next_structure_copilot(
+    structure: type[BMType],  # type[T]
+    model: Model,
+    messages: list,
+) -> BMType:
+    copilot_client = AsyncOpenAI(
+        api_key=os.environ.get("COPILOT_API_KEY") or "copilot",
+        base_url=COPILOT_BASE_URL,
+        timeout=2500,
+        max_retries=2,
+    )
+    messages = update_messages_openrouter(messages=messages)
+
+    schema = structure.model_json_schema()
+    if "additionalProperties" not in schema:
+        schema["additionalProperties"] = False
+
+    response_format: ResponseFormat = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": structure.__name__,
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+    content: str | None = ""
+    try:
+        response = await copilot_client.chat.completions.create(
+            model=model.value, messages=messages, response_format=response_format
+        )
+
+        if not response.choices:
+            raise Exception(f"Copilot returned no choices: {response}")
+        content = response.choices[0].message.content
+        if not content:
+            raise Exception("Empty response from Copilot model")
+
+        json_data = json.loads(content)
+        output: BMType = structure.model_validate(json_data)
+        return output
+    except Exception as e:
+        raise Exception(
+            f"Failed to parse structured Copilot response for {model.value}. Error: {e} content: {content}"
+        )
+
+
 def update_messages_openrouter(
-    messages: list[dict], structure: type[BMType] = None, use_json_object: bool = False
+    messages: list[dict],
+    structure: type[BMType] | None = None,
+    use_json_object: bool = False,
 ) -> list[dict]:
     """Convert messages to OpenRouter format, optionally with schema instructions for json_object mode."""
     messages = copy.deepcopy(messages)
@@ -780,11 +901,19 @@ async def _get_next_structure_openrouter(
     model: Model,
     messages: list,
 ) -> BMType:
-    import json
+    openrouter_client = AsyncOpenAI(
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        base_url="https://openrouter.ai/api/v1",
+        timeout=2500,
+        max_retries=2,
+    )
 
     # Check if we need to use json_object mode
     use_json_object = False
-    if model in [Model.openrouter_qwen_235b_thinking, Model.openrouter_gpt_oss_120b]:
+    if model in [
+        Model.openrouter_qwen_235b_thinking,
+        Model.openrouter_glm,
+    ]:
         use_json_object = True
 
     messages = update_messages_openrouter(
@@ -800,18 +929,25 @@ async def _get_next_structure_openrouter(
     if "additionalProperties" not in schema:
         schema["additionalProperties"] = False
 
-    # Default to using json_schema format for structured outputs
-    response_format = {
-        "type": "json_schema",
-        "json_schema": {"name": structure.__name__, "strict": True, "schema": schema},
-    }
+    # Set response format based on mode
+    response_format: ResponseFormat
+    if use_json_object:
+        response_format = {"type": "json_object"}
+    else:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": structure.__name__,
+                "strict": True,
+                "schema": schema,
+            },
+        }
 
     extra_body = {}
 
     # Special cases for certain models
     if model in [Model.openrouter_qwen_235b_thinking]:
         # This model might not support structured outputs
-        response_format = {"type": "json_object"}
         extra_body["provider"] = {
             "order": ["Novita"],
             "allow_fallbacks": True,
@@ -824,15 +960,6 @@ async def _get_next_structure_openrouter(
             "only": ["cerebras"],
             # "allow_fallbacks": True,
         }
-    elif model == Model.openrouter_gpt_oss_120b:
-        # Groq doesn't support json_schema, only json_object
-        response_format = {"type": "json_object"}
-        # Sort providers by throughput for maximum speed
-        extra_body["provider"] = {
-            # "sort": "throughput",
-            "allow_fallbacks": False,
-            "only": ["Cerebras", "Groq"],
-        }
     elif model == Model.gemini_3_pro_openrouter:
         # Gemini 3 Pro via OpenRouter - force Google provider, enable reasoning
         extra_body["provider"] = {
@@ -841,12 +968,7 @@ async def _get_next_structure_openrouter(
         }
         # OpenRouter's reasoning parameter for thinking models
         extra_body["reasoning"] = {"effort": "high"}
-    else:
-        # Default: sort by throughput for all other OpenRouter models
-        extra_body["provider"] = {
-            "sort": "throughput",
-            "allow_fallbacks": True,
-        }
+
     # if model in [Model.openrouter_glm]:
     #     extra_body["reasoning"]["enabled"] = True
 
@@ -861,6 +983,8 @@ async def _get_next_structure_openrouter(
     )
 
     # Parse the JSON response
+    if not response.choices:
+        raise Exception(f"OpenRouter returned no choices: {response}")
     content = response.choices[0].message.content
     if not content:
         # debug(response)
@@ -874,16 +998,254 @@ async def _get_next_structure_openrouter(
         raise Exception(f"Failed to parse JSON response: {e}\nResponse: {content}")
 
 
+def _log_lmstudio_completion_parse_failure(
+    *,
+    reason: str,
+    response: ChatCompletion,
+    api_model: str,
+    structure_name: str,
+) -> None:
+    """Log fields that explain missing or unusable assistant text (LM Studio / OpenAI-compatible)."""
+    details: dict[str, T.Any] = {
+        "reason": reason,
+        "api_model": api_model,
+        "structure": structure_name,
+        "response_id": response.id,
+        "response_model_field": response.model,
+    }
+    if response.usage is not None:
+        details["usage"] = response.usage.model_dump()
+
+    choices = response.choices
+    details["choices_len"] = len(choices)
+    if not choices:
+        log.error("LM Studio structured call: no choices", **details)
+        return
+
+    ch0 = choices[0]
+    details["finish_reason"] = ch0.finish_reason
+    details["choice_index"] = ch0.index
+    msg = ch0.message
+
+    try:
+        assistant = msg.model_dump()
+        raw_content = assistant.get("content")
+        if isinstance(raw_content, str):
+            assistant["content_len"] = len(raw_content)
+            if raw_content:
+                assistant["content_head"] = raw_content[:240]
+        details["assistant_message"] = assistant
+    except Exception as e:
+        details["assistant_message_dump_error"] = repr(e)
+
+    log.error("LM Studio structured call: unusable assistant content", **details)
+
+
+@retry_with_backoff(max_retries=20)
+async def _get_next_structure_lmstudio(
+    structure: type[BMType],
+    model: Model,
+    messages: list,
+) -> BMType:
+    messages = update_messages_openrouter(messages=messages)
+    api_model = model.value
+
+    schema = structure.model_json_schema()
+    if "additionalProperties" not in schema:
+        schema["additionalProperties"] = False
+
+    response_format: ResponseFormat = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": structure.__name__,
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+    response = await lmstudio_client.chat.completions.create(
+        model=api_model,
+        messages=messages,
+        response_format=response_format,
+    )
+
+    openai_usage = _openai_usage_from_completion_usage(response.usage)
+    if openai_usage is not None and response.choices:
+        ch0 = response.choices[0]
+        log.info(
+            "lmstudio_usage",
+            model=api_model,
+            usage=openai_usage.model_dump(),
+            cents=openai_usage.cents(model=model),
+            finish_reason=ch0.finish_reason,
+            reasoning_content=_chat_message_reasoning_content(ch0.message),
+        )
+
+    if not response.choices:
+        _log_lmstudio_completion_parse_failure(
+            reason="no_choices",
+            response=response,
+            api_model=api_model,
+            structure_name=structure.__name__,
+        )
+        raise Exception(f"LM Studio returned no choices: {response}")
+    msg = response.choices[0].message
+    raw_content = msg.content
+    if isinstance(raw_content, str):
+        content = raw_content.strip()
+    elif raw_content is None:
+        content = ""
+    else:
+        content = str(raw_content).strip()
+
+    if not content:
+        reasoning = _chat_message_reasoning_content(msg)
+        if reasoning and reasoning.strip():
+            content = reasoning.strip()
+            log.debug(
+                "LM Studio: using reasoning_content for structured JSON (message.content empty)",
+                api_model=api_model,
+                structure=structure.__name__,
+            )
+
+    if not content:
+        _log_lmstudio_completion_parse_failure(
+            reason="empty_or_missing_message_content",
+            response=response,
+            api_model=api_model,
+            structure_name=structure.__name__,
+        )
+        raise Exception("Empty response from LM Studio model")
+
+    try:
+        json_data = json.loads(content)
+        output: BMType = structure.model_validate(json_data)
+        return output
+    except json.JSONDecodeError as e:
+        raise Exception(f"Failed to parse JSON response: {e}\nResponse: {content}")
+
+
+def _strip_markdown_json_fence(text: str) -> str:
+    t = text.strip()
+    if not t:
+        return t
+    m = re.match(
+        r"^```(?:json)?\s*\r?\n?(.*)\r?\n?```\s*$", t, re.DOTALL | re.IGNORECASE
+    )
+    if m:
+        return m.group(1).strip()
+    return t
+
+
+def _extract_balanced_json_fragment(
+    text: str, start: int, open_ch: str, close_ch: str
+) -> str | None:
+    if start >= len(text) or text[start] != open_ch:
+        return None
+    depth = 1
+    in_string = False
+    escape = False
+    i = start + 1
+    while i < len(text):
+        c = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+        else:
+            if c == '"':
+                in_string = True
+            elif c == open_ch:
+                depth += 1
+            elif c == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        i += 1
+    return None
+
+
+def _loads_json_from_model_text(content: str) -> T.Any:
+    """Parse JSON from chat completions; tolerate markdown fences and trailing prose."""
+    raw = content.strip().replace("\ufeff", "")
+    raw = _strip_markdown_json_fence(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        idx = 0
+        while True:
+            pos = raw.find(open_ch, idx)
+            if pos < 0:
+                break
+            frag = _extract_balanced_json_fragment(raw, pos, open_ch, close_ch)
+            if frag:
+                try:
+                    return json.loads(frag)
+                except json.JSONDecodeError:
+                    pass
+            idx = pos + 1
+    raise json.JSONDecodeError(
+        "no parseable JSON object or array in model content", content, 0
+    )
+
+
+@retry_with_backoff(max_retries=20)
+async def _get_next_structure_kilo(
+    structure: type[BMType],
+    model: Model,
+    messages: list,
+) -> BMType:
+    messages = update_messages_openrouter(messages=messages)
+    _json_hint = "Respond with JSON matching the requested schema."
+    if messages and messages[0].get("role") == "system":
+        messages[0]["content"] = f"{_json_hint}\n\n{messages[0]['content']}"
+    else:
+        messages.insert(0, {"role": "system", "content": _json_hint})
+
+    schema = structure.model_json_schema()
+    if "additionalProperties" not in schema:
+        schema["additionalProperties"] = False
+
+    response_format: ResponseFormat = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": structure.__name__,
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+    response = await kilo_client.chat.completions.create(
+        model=model.value,
+        messages=messages,
+        response_format=response_format,
+        max_tokens=100_000,
+    )
+
+    if not response.choices:
+        raise Exception(f"Kilo returned no choices: {response}")
+    content = response.choices[0].message.content
+    if not content:
+        raise Exception("Empty response from Kilo model")
+
+    try:
+        json_data = _loads_json_from_model_text(content)
+        output: BMType = structure.model_validate(json_data)
+        return output
+    except json.JSONDecodeError as e:
+        raise Exception(f"Failed to parse JSON response: {e}\nResponse: {content}")
+
+
 # Gemini model output token limits
 GEMINI_MODEL_MAX_OUTPUT_TOKENS: dict[Model, int] = {
     Model.gemini_2_5: 65_536,
     Model.gemini_2_5_flash_lite: 8_192,
     Model.gemini_3_pro: 65_536,  # Max output tokens
-}
-
-# Gemini thinking budget (for reasoning models)
-GEMINI_MODEL_THINKING_BUDGET: dict[Model, int] = {
-    Model.gemini_3_pro: 65_535,  # Max allowed: 65535
 }
 
 
@@ -897,17 +1259,14 @@ async def _get_next_structure_gemini(
     prompt = update_messages_gemini(messages=messages)
 
     # Build config for structured output with maxed out settings
-    config: dict[str, T.Any] = {
-        "response_mime_type": "application/json",
-        "response_schema": structure,
-        "max_output_tokens": GEMINI_MODEL_MAX_OUTPUT_TOKENS.get(model, 65_536),
-    }
+    config = GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=structure,
+        max_output_tokens=GEMINI_MODEL_MAX_OUTPUT_TOKENS.get(model, 65_536),
+    )
 
     # Enable thinking for reasoning models (Gemini 3 Pro)
-    if model in GEMINI_MODEL_THINKING_BUDGET:
-        config["thinking_config"] = {
-            "thinking_budget": GEMINI_MODEL_THINKING_BUDGET[model],
-        }
+    config.thinking_config = ThinkingConfig(thinking_level="HIGH")
 
     # Use native async API instead of asyncio.to_thread
     response = await gemini_client.aio.models.generate_content(
@@ -935,11 +1294,9 @@ async def _get_next_structure_gemini(
 
     # The response.parsed should contain the instantiated object
     if hasattr(response, "parsed") and response.parsed:
-        return response.parsed
+        return T.cast(BMType, response.parsed)
 
     # Fallback to parsing the text response
-    import json
-
     content = response.text
     if not content:
         raise Exception("Empty response from Gemini model")
@@ -1011,15 +1368,21 @@ async def _get_next_structure_pydantic_gateway(
 
     # Create gateway provider with explicit API key
     # Support both env var names
-    gateway_api_key = os.environ.get("PYDANTIC_AI_GATEWAY_API_KEY") or os.environ.get("PYDANTIC_API_GATEWAY_API_KEY")
+    gateway_api_key = os.environ.get("PYDANTIC_AI_GATEWAY_API_KEY") or os.environ.get(
+        "PYDANTIC_API_GATEWAY_API_KEY"
+    )
     if not gateway_api_key:
-        raise ValueError("Set PYDANTIC_AI_GATEWAY_API_KEY or PYDANTIC_API_GATEWAY_API_KEY environment variable")
-    
+        raise ValueError(
+            "Set PYDANTIC_AI_GATEWAY_API_KEY or PYDANTIC_API_GATEWAY_API_KEY environment variable"
+        )
+
     # Create custom HTTP client with long timeout for reasoning models (3 hours like GPT-5-Pro)
     http_client = httpx.AsyncClient(timeout=httpx.Timeout(10_800.0))
-    
+
     # gateway_provider takes upstream provider as string (e.g., "google-vertex")
-    gateway = gateway_provider("google-vertex", api_key=gateway_api_key, http_client=http_client)
+    gateway = gateway_provider(
+        "google-vertex", api_key=gateway_api_key, http_client=http_client
+    )
 
     # Extract model name from the gateway path (e.g., "gateway/google-vertex:gemini-3-pro-preview" -> "gemini-3-pro-preview")
     model_name = model.value.split(":")[-1]

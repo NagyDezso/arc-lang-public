@@ -22,7 +22,11 @@ class Model(str, Enum):
     sonnet_3_5 = "claude-3-5-sonnet-latest"
     sonnet_4_5 = "claude-sonnet-4-5-20250929"
     gemini_2_5 = "gemini-2.5-pro"
-    gemini_2_5_flash_lite = "gemini-2.0-flash-lite"
+    gemini_2_5_flash_lite = "gemini-2.5-flash-lite"
+    copilot_gemini_3_flash_preview = "gemini-3-flash-preview"
+    copilot_gpt_5_mini = "gpt-5-mini"
+
+    gemini_3_flash = "gemini-3-flash-preview"
     gemini_3_pro = "gemini-3-pro-preview"
     gemini_3_pro_gateway = "gateway/google-vertex:gemini-3-pro-preview"
     gemini_3_pro_openrouter = "google/gemini-3-pro-preview"
@@ -52,15 +56,28 @@ class Model(str, Enum):
     openrouter_gemini_2_5_flash_lite = "google/gemini-2.5-flash-lite"
     openrouter_grok_4 = "x-ai/grok-4"
 
-    openrouter_glm = "z-ai/glm-4.5"
+    openrouter_glm = "z-ai/glm-4.5-air:free"
     openrouter_kimi_k2 = "moonshotai/kimi-k2"
+
+    kilo_gemini_3_flash_preview = "google/gemini-3-flash-preview"
+    kilo_glm_5 = "z-ai/glm-5:free"
+    kilo_minimax_m2_5 = "minimax/minimax-m2.5:free"
+    kilo_qwen_3_6_plus = "qwen/qwen3.6-plus:free"
 
     openrouter_horizon_alpha = "openrouter/horizon-alpha"
 
-    openrouter_gpt_oss_120b = "openai/gpt-oss-120b"
+    openrouter_gpt_oss_120b = "openai/gpt-oss-120b:free"
+    openrouter_nvidia_nemotron_3 = "nvidia/nemotron-3-nano-30b-a3b:free"
+    openrouter_trinity_large = "arcee-ai/trinity-large-preview:free"
 
     cerebras_gpt_oss_120b = "gpt-oss-120b"
     groq_gpt_oss_120b = "openai/gpt-oss-120b"
+
+    lmstudio_qwen_3_5_27b = "qwen3.5-27b"
+    lmstudio_gemma_4_31b = "gemma-4-31b-it"
+
+
+LMSTUDIO_OPENAI_BASE_URL = "http://127.0.0.1:4444/v1"
 
 
 class ModelConfig(BaseModel):

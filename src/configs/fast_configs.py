@@ -1,6 +1,6 @@
 from src.configs.models import Model, RunConfig, Step, StepRevision, StepRevisionPool
 
-model = Model.grok_3_mini_fast
+model = Model.groq_gpt_oss_120b
 
 mini_config_big = RunConfig(
     final_follow_model=model,
