@@ -1,10 +1,13 @@
+import argparse
 import asyncio
 import json
 import os
 import traceback
 import typing as T
 import uuid
+from datetime import datetime
 from pathlib import Path
+from types import CoroutineType
 
 import asyncpg
 from pydantic import BaseModel, TypeAdapter
@@ -15,7 +18,7 @@ from src.llms.structured import get_next_structure
 from src.log import log
 
 # Import logging_config first to apply patches before any logfire usage
-from src.logging_config import generate_run_id, set_task_id
+from src.logging_config import configure_local_log_path, generate_run_id, set_task_id
 from src.main import (
     GRID,
     INTUITIVE_PROMPT,
@@ -26,27 +29,65 @@ from src.main import (
     contents_from_challenge,
     output_grid_from_instructions,
 )
-from src.models import Challenge, Input
+from src.models import Challenge, TestExample
+from src.submit import ChallengeSolution, evaluate_solutions
 from src.utils import random_str
 
 TT = T.TypeVar("TT")
 
 
-def filter_out_exceptions(lst: list[TT | Exception], description: str) -> list[TT]:
+def filter_out_exceptions(
+    lst: T.Sequence[TT | BaseException], description: str
+) -> list[TT]:
     exceptions = [instr for instr in lst if isinstance(instr, Exception)]
     for e in exceptions:
-        log.error(
-            f"{description}: {type(e).__name__}",
-            error_type=type(e).__name__,
-            error_message=str(e),
-            traceback="".join(traceback.format_exception(type(e), e, e.__traceback__)),
-        )
-    return [i for i in lst if not isinstance(i, Exception)]
+        error_kwargs: dict[str, T.Any] = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+        }
+        if str(e) != "no scores...":
+            error_kwargs["traceback"] = "".join(
+                traceback.format_exception(type(e), e, e.__traceback__)
+            )
+
+        log.error(f"{description}: {type(e).__name__}", **error_kwargs)
+    return [
+        i
+        for i in lst
+        if not isinstance(i, Exception) and not isinstance(i, BaseException)
+    ]
 
 
 def challenge_ids_by_size(challenges_by_id: dict[str, Challenge]) -> list[str]:
     # sort challenges by size and return list of challenge ids
     return sorted(challenges_by_id.keys(), key=lambda k: challenges_by_id[k].size())
+
+
+def parse_model(model_arg: str) -> Model:
+    """Accept either enum key (e.g. groq_kimi_k2) or model value."""
+    try:
+        return Model[model_arg]
+    except KeyError:
+        pass
+
+    for model in Model:
+        if model.value == model_arg:
+            return model
+
+    raise ValueError(model_arg)
+
+
+def with_model(config: RunConfig, model: Model) -> RunConfig:
+    """Return a copy of config with all models overridden."""
+    updated_steps: list[Step | StepRevision | StepRevisionPool] = []
+    for step in config.steps:
+        updated_steps.append(
+            step.model_copy(update={"instruction_model": model, "follow_model": model})
+        )
+
+    return config.model_copy(
+        update={"final_follow_model": model, "steps": updated_steps},
+    )
 
 
 class ExampleScore(BaseModel):
@@ -87,8 +128,15 @@ class InstructionsScore(BaseModel):
 
         database_url = os.environ["NEON_DSN"]
 
-        # Connect to the database
-        conn = await asyncpg.connect(database_url)
+        try:
+            conn = await asyncpg.connect(database_url)
+        except Exception as e:
+            log.warning(
+                "Skipping instructions DB save (could not connect)",
+                error_type=type(e).__name__,
+                error_message=str(e) or repr(e),
+            )
+            return
 
         try:
             # Prepare the data
@@ -106,7 +154,6 @@ class InstructionsScore(BaseModel):
                 {**self.step.model_dump(), "type": type(self.step).__name__}
             )
 
-            # Insert the record - will raise exception if insert fails
             await conn.execute(
                 """
                 INSERT INTO instructions (id, instructions, model, example_scores, score, task_id, task_hash, step)
@@ -121,14 +168,31 @@ class InstructionsScore(BaseModel):
                 str(hash(c)),  # Convert hash to string
                 step_json,
             )
+        except Exception as e:
+            log.warning(
+                "Skipping instructions DB save (insert failed)",
+                error_type=type(e).__name__,
+                error_message=str(e) or repr(e),
+            )
         finally:
-            # Always close the connection
             await conn.close()
 
     async def get_revised_instructions(self, c: Challenge, step: StepRevision) -> str:
         # go thru for each example, say if it got it right
         # and then give the diff
         # and finally, give an updated instructions given this feedback
+
+        training_example_attempts: list[GRID] | None = None
+        if len(self.example_scores) == len(c.train):
+            training_example_attempts = [
+                sc.response_output_grid for sc in self.example_scores
+            ]
+        else:
+            log.warn(
+                "Skipping attempt feedback in revision due partial example scores",
+                expected_examples=len(c.train),
+                received_scores=len(self.example_scores),
+            )
 
         messages: list[dict] = [
             {
@@ -137,7 +201,7 @@ class InstructionsScore(BaseModel):
                     {"type": "input_text", "text": INTUITIVE_PROMPT},
                     *contents_from_challenge(
                         training_examples=c.train,
-                        training_example_attempts=None,
+                        training_example_attempts=training_example_attempts,
                         test_inputs=c.test,
                         include_base64=step.include_base64,
                         use_diffs=step.use_diffs,
@@ -159,9 +223,7 @@ class InstructionsScore(BaseModel):
                     {"type": "input_text", "text": REVISION_PROMPT},
                     *contents_from_challenge(
                         training_examples=c.train,
-                        training_example_attempts=[
-                            sc.response_output_grid for sc in self.example_scores
-                        ],
+                        training_example_attempts=training_example_attempts,
                         test_inputs=c.test,
                         include_base64=step.include_base64,
                         use_diffs=step.use_diffs,
@@ -189,14 +251,17 @@ def get_grid_similarity(
     if not ground_truth_grid or not sample_grid:
         return 0.0
 
-    # Check if grids have the same dimensions
-    if len(ground_truth_grid) != len(sample_grid) or len(ground_truth_grid[0]) != len(
-        sample_grid[0]
-    ):
+    rows = len(ground_truth_grid)
+    cols = len(ground_truth_grid[0]) if ground_truth_grid[0] else 0
+    if cols == 0:
         return 0.0
 
-    rows = len(ground_truth_grid)
-    cols = len(ground_truth_grid[0])
+    if not all(len(row) == cols for row in ground_truth_grid):
+        return 0.0
+
+    if len(sample_grid) != rows or not all(len(row) == cols for row in sample_grid):
+        return 0.0
+
     total_cells = rows * cols
     matching_cells = 0
 
@@ -248,7 +313,9 @@ def generate_grid_diff(
         zip(expected_grid, actual_grid, strict=False)
     ):
         if len(expected_row) != len(actual_row):
-            diff_lines.append(f"| Row {row_idx}: Error - column count mismatch |")
+            diff_lines.append(
+                f"| Row {row_idx}: Error: Column count mismatch ({len(expected_row)} vs {len(actual_row)}) |"
+            )
             continue
 
         row_cells = []
@@ -342,9 +409,7 @@ async def score_instructions_on_challenge(
                     model=step.follow_model,
                 )
             )
-        example_scores: list[ExampleScore] = list(
-            await asyncio.gather(*futures, return_exceptions=True)
-        )
+        example_scores = await asyncio.gather(*futures, return_exceptions=True)
         example_scores = filter_out_exceptions(
             lst=example_scores, description="Exception in get_score_from_instructions"
         )
@@ -419,9 +484,7 @@ async def get_instruction_scores(c: Challenge, step: Step) -> list[InstructionsS
     futures = [
         get_instruction_score_from_challenge(c=c, step=step) for _ in range(step.times)
     ]
-    results: list[InstructionsScore] = await asyncio.gather(
-        *futures, return_exceptions=True
-    )
+    results = await asyncio.gather(*futures, return_exceptions=True)
     return filter_out_exceptions(
         lst=results, description="Exception in get_multiple_scores"
     )
@@ -505,7 +568,7 @@ async def get_pooling_instruction_from_scores(
 
 class Guess(BaseModel):
     grids: list[GRID]
-    instructions_score: InstructionsScore
+    instructions_scores: list[InstructionsScore]
     model: Model
 
     async def save_to_db(self, avg_score: float, scores: list[float]) -> None:
@@ -515,11 +578,17 @@ class Guess(BaseModel):
 
         database_url = os.environ["NEON_DSN"]
 
-        # Connect to the database
-        conn = await asyncpg.connect(database_url)
+        try:
+            conn = await asyncpg.connect(database_url)
+        except Exception as e:
+            log.warning(
+                "Skipping guess DB save (could not connect)",
+                error_type=type(e).__name__,
+                error_message=str(e) or repr(e),
+            )
+            return
 
         try:
-            # Insert the record - will raise exception if insert fails
             await conn.execute(
                 """
                 INSERT INTO guess (id, grids, instructions_score_id, model, avg_score, scores)
@@ -527,26 +596,31 @@ class Guess(BaseModel):
                 """,
                 str(uuid.uuid4()),  # Generate new UUID for this guess
                 json.dumps(self.grids),  # Convert grids to JSON string for JSONB
-                self.instructions_score.id,  # Foreign key to instructions table
+                self.instructions_scores[
+                    0
+                ].id,  # FK: schema has one id; use first test case
                 self.model.value,  # Use the string value of the enum
                 avg_score,
                 json.dumps(scores),  # Convert scores list to JSON string for JSONB
             )
+        except Exception as e:
+            log.warning(
+                "Skipping guess DB save (insert failed)",
+                error_type=type(e).__name__,
+                error_message=str(e) or repr(e),
+            )
         finally:
-            # Always close the connection
             await conn.close()
 
 
 async def get_diverse_attempts(
     c: Challenge,
     step: Step | StepRevision | StepRevisionPool,
-    test_input: Input,
+    test_input: TestExample,
     scores: list[InstructionsScore],
     config: RunConfig,
 ) -> tuple[tuple[GRID, InstructionsScore], tuple[GRID, InstructionsScore]]:
-    scores: list[InstructionsScore] = sorted(
-        scores, key=lambda x: x.score, reverse=True
-    )
+    scores = sorted(scores, key=lambda x: x.score, reverse=True)
     perfect_scores = [s for s in scores if s.score == 1]
     if perfect_scores:
         scores_to_use = perfect_scores[0 : config.final_follow_times]
@@ -584,9 +658,7 @@ async def get_diverse_attempts(
             )
         )
     log.debug("scores to use for final grids", scores=scores_to_use)
-    _final_output_grids: list[GRID] = await asyncio.gather(
-        *futures, return_exceptions=True
-    )
+    _final_output_grids = await asyncio.gather(*futures, return_exceptions=True)
     final_output_grids_and_scores: list[tuple[GRID, InstructionsScore]] = []
     for i, g in enumerate(_final_output_grids):
         if isinstance(g, Exception):
@@ -609,7 +681,10 @@ async def get_diverse_attempts(
 
 
 async def return_answer(
-    c: Challenge, scores: list[InstructionsScore], config: RunConfig, step: Step
+    c: Challenge,
+    scores: list[InstructionsScore],
+    config: RunConfig,
+    step: Step | StepRevision | StepRevisionPool,
 ) -> tuple[Guess, Guess]:
     log.info(
         "Perfect score achieved or ending, generating final answers",
@@ -638,14 +713,13 @@ async def return_answer(
         first_prediction.append(final_output_grids[i][0])
         second_prediction.append(final_output_grids[i][1])
 
-    # fix this later, should be list of scores per grid for instructions_score
     first_prediction_guess = Guess(
-        instructions_score=first_prediction[0][1],
+        instructions_scores=[g[1] for g in first_prediction],
         model=config.final_follow_model,
         grids=[g[0] for g in first_prediction],
     )
     second_prediction_guess = Guess(
-        instructions_score=second_prediction[0][1],
+        instructions_scores=[g[1] for g in second_prediction],
         model=config.final_follow_model,
         grids=[g[0] for g in second_prediction],
     )
@@ -661,8 +735,8 @@ async def return_answer(
 async def get_answer_grids(*, c: Challenge, config: RunConfig) -> tuple[Guess, Guess]:
     if os.environ.get("VIZ", "0") == "1":
         c.viz()
-    instruction_scores: list[InstructionsScore] = []
-    prev_step: Step = config.steps[0]
+    instruction_scores = []
+    prev_step = config.steps[0]
     for step in config.steps:
         with log.span("step starting", step=step):
             if isinstance(step, Step):
@@ -690,7 +764,7 @@ async def get_answer_grids(*, c: Challenge, config: RunConfig) -> tuple[Guess, G
                 else:
                     raise Exception(f"invalid step: {step}")
 
-                revised_instructions: list[str] = await asyncio.gather(
+                revised_instructions = await asyncio.gather(
                     *futures, return_exceptions=True
                 )
                 revised_instructions = filter_out_exceptions(
@@ -705,8 +779,8 @@ async def get_answer_grids(*, c: Challenge, config: RunConfig) -> tuple[Guess, G
                             c=c, instructions=revised_instruction, step=step
                         )
                     )
-                new_instruction_scores: list[InstructionsScore] = list(
-                    await asyncio.gather(*futures, return_exceptions=True)
+                new_instruction_scores = await asyncio.gather(
+                    *futures, return_exceptions=True
                 )
                 if new_instruction_scores:
                     new_instruction_scores = filter_out_exceptions(
@@ -759,34 +833,75 @@ async def get_answer_grids(*, c: Challenge, config: RunConfig) -> tuple[Guess, G
         raise Exception("no scores...")
 
 
-class ChallengeSolution(BaseModel):
-    attempt_1: GRID
-    attempt_2: GRID
-
-
 SOLUTIONS_D: dict[str, list[ChallengeSolution]] = {}
 
 
-def evaluate_solutions(
-    attempts_solutions_path: Path, truth_solutions_path: Path
-) -> None:
-    truth: dict[str, list[GRID]] = json.loads(open(truth_solutions_path).read())
-    attempts: dict[str, list[ChallengeSolution]] = TypeAdapter(
-        dict[str, list[ChallengeSolution]]
-    ).validate_json(open(attempts_solutions_path).read())
-    total_count = 0
-    correct_count = 0
-    for challenge_id, attempt_list in attempts.items():
-        truth_grids: list[GRID] = truth[challenge_id]
-        for i, truth_grid in enumerate(truth_grids):
-            total_count = total_count + 1
-            attempt_grids = attempt_list[i]
-            if attempt_grids.attempt_1 == truth_grid:
-                correct_count = correct_count + 1
-            elif attempt_grids.attempt_2 == truth_grid:
-                correct_count = correct_count + 1
+def _attempts_layout_for_run_dir(
+    results_run_dir: Path, challenges_path: Path
+) -> tuple[Path, Path]:
+    """Default aggregate path and per-task directory under a run folder."""
+    attempts_subdir = results_run_dir / "attempts"
+    aggregate_name = challenges_path.name.replace("_challenges", "_attempts")
+    default_aggregate = attempts_subdir / aggregate_name
+    if not attempts_subdir.is_dir():
+        return default_aggregate, attempts_subdir
+    candidates = sorted(attempts_subdir.glob("*_attempts.json"))
+    if len(candidates) == 1:
+        return candidates[0], attempts_subdir
+    if len(candidates) > 1:
+        raise ValueError(
+            f"Multiple aggregate *_attempts.json files under {attempts_subdir}; "
+            "pass attempts_path and temp_attempts_dir explicitly."
+        )
+    return default_aggregate, attempts_subdir
 
-    print("total count", total_count, "correct count", correct_count)
+
+def load_resume_solutions(
+    attempts_path: Path,
+    temp_attempts_dir: Path,
+) -> dict[str, list[ChallengeSolution]]:
+    """Load completed tasks from the aggregate file and/or per-task JSON files."""
+    merged: dict[str, list[ChallengeSolution]] = {}
+    adapter_dict = TypeAdapter(dict[str, list[ChallengeSolution]])
+    adapter_list = TypeAdapter(list[ChallengeSolution])
+
+    if attempts_path.is_file():
+        try:
+            merged.update(
+                adapter_dict.validate_json(attempts_path.read_text(encoding="utf-8"))
+            )
+        except Exception as e:
+            log.warning(
+                "Could not parse aggregate attempts for resume",
+                path=str(attempts_path),
+                error=str(e),
+            )
+
+    if temp_attempts_dir.is_dir():
+        aggregate_resolved = attempts_path.resolve()
+        for p in sorted(temp_attempts_dir.glob("*.json")):
+            if p.resolve() == aggregate_resolved:
+                continue
+            tid = p.stem
+            if tid in merged:
+                continue
+            try:
+                data = adapter_list.validate_json(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if data:
+                merged[tid] = data
+
+    return merged
+
+
+def _challenge_needs_solve(
+    c: Challenge, saved: dict[str, list[ChallengeSolution]]
+) -> bool:
+    got = saved.get(c.task_id)
+    if got is None:
+        return True
+    return len(got) != len(c.test)
 
 
 async def solve_challenge(
@@ -819,15 +934,15 @@ async def solve_challenge(
     SOLUTIONS_D[c.task_id] = challenge_solutions
 
     open(temp_attempts_dir / f"{c.task_id}.json", "w").write(
-        TypeAdapter(list[ChallengeSolution])
-        .dump_json(SOLUTIONS_D[c.task_id])
-        .decode("utf-8")
+        json.dumps(
+            TypeAdapter(list[ChallengeSolution]).dump_python(SOLUTIONS_D[c.task_id])
+        )
     )
 
     open(attempts_path, "w").write(
-        TypeAdapter(dict[str, list[ChallengeSolution]])
-        .dump_json(SOLUTIONS_D)
-        .decode("utf-8")
+        json.dumps(
+            TypeAdapter(dict[str, list[ChallengeSolution]]).dump_python(SOLUTIONS_D)
+        )
     )
 
     if solution_grids:
@@ -883,10 +998,8 @@ async def solve_challenges(
         *,
         challenge: Challenge,
         solution_grids: list[GRID] | None,
-        sleep_for: int,
     ) -> float:
         async with semaphore:
-            await asyncio.sleep(sleep_for)
             return await solve_challenge(
                 c=challenge,
                 solution_grids=solution_grids,
@@ -895,18 +1008,14 @@ async def solve_challenges(
                 temp_attempts_dir=temp_attempts_dir,
             )
 
-    futures = []
+    futures: list[CoroutineType[T.Any, T.Any, float]] = []
     if solution_grids_list is None:
-        solution_grids_list = [None for _ in range(len(challenges))]
-    for i, (challenge, solution_grids) in enumerate(
-        zip(challenges, solution_grids_list, strict=True)
-    ):
+        solution_grids_list = [[] * len(challenges)]
+    for challenge, solution_grids in zip(challenges, solution_grids_list, strict=True):
         futures.append(
-            solve_with_semaphore(
-                challenge=challenge, solution_grids=solution_grids, sleep_for=i * 5
-            )
+            solve_with_semaphore(challenge=challenge, solution_grids=solution_grids)
         )
-    scores: list[float] = await asyncio.gather(*futures, return_exceptions=True)
+    scores = await asyncio.gather(*futures, return_exceptions=True)
     scores = filter_out_exceptions(
         lst=scores, description="Exception in solve_challenges"
     )
@@ -926,20 +1035,62 @@ async def solve_challenges(
 async def run_from_json(
     *,
     challenges_path: Path,
-    attempts_path: Path,
-    temp_attempts_dir: Path,
     config: RunConfig,
     truth_solutions_path: Path,
     limit: int | None,
     offset: int = 0,
     task_ids: set[str] | None = None,
-) -> None:
+    results_run_dir: Path | None = None,
+    attempts_path: Path | None = None,
+    temp_attempts_dir: Path | None = None,
+    resume_dir: Path | None = None,
+) -> Path:
     global SOLUTIONS_D
-    SOLUTIONS_D = {}
+
+    project_root = Path(__file__).resolve().parents[1]
+    resuming = resume_dir is not None
+    if resuming:
+        results_run_dir = resume_dir.resolve()
+        if not results_run_dir.is_dir():
+            raise NotADirectoryError(
+                f"Resume directory does not exist: {results_run_dir}"
+            )
+    elif results_run_dir is None:
+        results_run_dir = (
+            project_root / "results" / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        )
+        results_run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        results_run_dir = results_run_dir.resolve()
+        results_run_dir.mkdir(parents=True, exist_ok=True)
+
+    if not os.environ.get("LOG_FILE"):
+        configure_local_log_path(results_run_dir / "arc.log")
+
+    if attempts_path is None and temp_attempts_dir is None:
+        attempts_path, temp_attempts_dir = _attempts_layout_for_run_dir(
+            results_run_dir, challenges_path
+        )
+        temp_attempts_dir.mkdir(parents=True, exist_ok=True)
+    elif attempts_path is None or temp_attempts_dir is None:
+        raise ValueError(
+            "attempts_path and temp_attempts_dir must both be set or both omitted"
+        )
+
+    if resuming:
+        SOLUTIONS_D = load_resume_solutions(attempts_path, temp_attempts_dir)
+    else:
+        SOLUTIONS_D = {}
 
     run_id = generate_run_id()
     print(f"\n{'=' * 50}")
-    print(f"Starting new run with ID: {run_id}")
+    if resuming:
+        print(f"Resuming run (session id: {run_id})")
+        print(f"Results directory: {results_run_dir}")
+        print(f"Loaded {len(SOLUTIONS_D)} task(s) from previous output")
+    else:
+        print(f"Starting new run with ID: {run_id}")
+        print(f"Results directory: {results_run_dir}")
     print(f"{'=' * 50}\n")
 
     raw_challenges: dict[str, dict] = json.loads(challenges_path.read_text())
@@ -950,19 +1101,28 @@ async def run_from_json(
     if task_ids:
         root_challenges = {k: v for k, v in root_challenges.items() if k in task_ids}
     challenges_list = list(root_challenges.values())
-    if limit:
-        challenges_list = challenges_list[offset : offset + limit]
+    root_solutions = TypeAdapter(dict[str, list[list[list[int]]]]).validate_json(
+        truth_solutions_path.read_text()
+    )
 
-    # now sort challenges by their length
-    challenges_list = sorted(challenges_list, key=lambda x: len(str(x)))
-
-    if truth_solutions_path:
-        root_solutions = TypeAdapter(dict[str, list[list[list[int]]]]).validate_json(
-            truth_solutions_path.read_text()
-        )
-        solutions_list = [root_solutions[c.task_id] for c in challenges_list]
+    if resuming:
+        ordered = sorted(challenges_list, key=lambda x: len(str(x)))
+        incomplete = [c for c in ordered if _challenge_needs_solve(c, SOLUTIONS_D)]
+        if limit is not None:
+            challenges_list = incomplete[offset : offset + limit]
+            print(
+                f"Resume: {len(incomplete)} incomplete challenges "
+                f"offset={offset}, limit={limit} → {len(challenges_list)} to run."
+            )
+        else:
+            challenges_list = incomplete
+            print(f"Resume: {len(challenges_list)} incomplete challenges (no limit).")
     else:
-        solutions_list = None
+        if limit:
+            challenges_list = challenges_list[offset : offset + limit]
+        challenges_list = sorted(challenges_list, key=lambda x: len(str(x)))
+
+    solutions_list = [root_solutions[c.task_id] for c in challenges_list]
 
     with log.span("run_challenges", run_id=run_id):
         log.info(
@@ -970,24 +1130,37 @@ async def run_from_json(
             config=config.model_dump(),
             challenges_path=str(challenges_path),
             num_challenges=len(root_challenges),
+            results_run_dir=str(results_run_dir),
+            resuming=resuming,
+            challenges_to_run=len(challenges_list),
         )
 
         temp_attempts_dir.mkdir(exist_ok=True, parents=True)
 
-        final_scores = await solve_challenges(
-            challenges=challenges_list,
-            attempts_path=attempts_path,
-            solution_grids_list=solutions_list,
-            config=config,
-            temp_attempts_dir=temp_attempts_dir,
-        )
-        log.info("Run completed", final_scores=final_scores)
+        if not challenges_list:
+            log.info(
+                "No challenges to run",
+                resuming=resuming,
+                results_run_dir=str(results_run_dir),
+            )
+            print("Nothing to run; no challenges queued.")
+        else:
+            final_scores = await solve_challenges(
+                challenges=challenges_list,
+                attempts_path=attempts_path,
+                solution_grids_list=solutions_list,
+                config=config,
+                temp_attempts_dir=temp_attempts_dir,
+            )
+            log.info("Run completed", final_scores=final_scores)
+
+    return attempts_path
 
 
 async def run() -> None:
     # Generate and print run ID at the start
 
-    year = "2025"
+    year = "2024"
     train_or_eval = "evaluation"
     root_dir = Path(__file__).parent.parent
 
@@ -1006,45 +1179,54 @@ async def run() -> None:
     )
     # solutions_path = None
 
-    attempts_path = (
-        root_dir
-        / "attempts"
-        / f"arc-prize-{year}"
-        / f"arc-agi_{train_or_eval}_attempts.json"
+    parser = argparse.ArgumentParser(description="Run ARC solver")
+    parser.add_argument(
+        "--model",
+        "-m",
+        type=str,
+        help="Model enum key or value (e.g., groq_kimi_k2, moonshotai/kimi-k2-instruct-0905)",
     )
-
-    temp_attempts_path = root_dir / "attempts" / f"arc-prize-{year}" / "temp_solutions"
-
-    from src.configs.ant_configs import sonnet_4_5_config_prod
-    from src.configs.fast_configs import mini_config, mini_for_testing
-    from src.configs.gemini3pro_configs import (
-        gemini3pro_config_prod,
-        gemini3pro_config_small,
-        gemini3pro_gateway_prod,
-        gemini3pro_openrouter_prod,
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Existing results/<timestamp> folder to resume (reuses attempts/ and arc.log; skips tasks already saved)",
     )
-    from src.configs.gpt5pro_configs import gpt5pro_config_prod
+    args = parser.parse_args()
+
     from src.configs.gpt52_configs import gpt52_config_prod
-    from src.configs.gpt_configs import gpt_config_prod
-    from src.configs.grok_configs import grok_config_prod
-    from src.configs.oss_configs import oss_config
 
-    await run_from_json(
+    run_config = gpt52_config_prod
+    if args.model:
+        try:
+            selected_model = parse_model(args.model)
+        except ValueError:
+            available_models = ", ".join(model.name for model in Model)
+            raise ValueError(
+                f"Unknown model '{args.model}'. Available model keys: {available_models}"
+            )
+        run_config = with_model(run_config, selected_model)
+
+    attempts_aggregate = await run_from_json(
         challenges_path=challenges_path,
         truth_solutions_path=solutions_path,
-        config=gpt52_config_prod,
-        attempts_path=attempts_path,
-        temp_attempts_dir=temp_attempts_path,
-        limit=10,
+        config=run_config,
+        limit=2,
         offset=0,
-        # task_ids={"b0039139", "20270e3b"},
+        # task_ids={},
+        resume_dir=args.resume,
     )
 
     if solutions_path:
         evaluate_solutions(
-            attempts_solutions_path=attempts_path, truth_solutions_path=solutions_path
+            attempts_solutions_path=attempts_aggregate,
+            truth_solutions_path=solutions_path,
         )
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        pass

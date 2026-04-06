@@ -12,9 +12,9 @@ and then re-exports the `logfire` API under the name `log`.
 """
 
 # Ensure side-effects (patching + local file handler) are applied
-import src.logging_config  # noqa: F401
-
 import logfire as _logfire
+
+import src.logging_config  # noqa: F401
 
 # Re-export the logfire API via `log` for ergonomic imports
 log = _logfire

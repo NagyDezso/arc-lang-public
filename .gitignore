@@ -13,5 +13,7 @@ wheels/
 .env
 .run
 attempts/
+results/
 .DS_Store
 logs/
+.logfire/

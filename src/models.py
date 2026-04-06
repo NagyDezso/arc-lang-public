@@ -10,15 +10,16 @@ class Example(BaseModel):
     output: GRID
 
 
-class Input(BaseModel):
+class TestExample(BaseModel):
     input: GRID
+    output: GRID | None = None
 
 
 class Challenge(BaseModel):
     task_id: str
 
     train: list[Example]
-    test: list[Input]
+    test: list[TestExample]
 
     def __hash__(self) -> int:
         return hash(self.model_dump_json(include={"train", "test"}))
@@ -29,11 +30,11 @@ class Challenge(BaseModel):
     def viz(
         self,
         *,
-        train_attempts: list[GRID] = None,
-        solutions: list[GRID] = None,
-        test_attempts: list[GRID] = None,
+        train_attempts: list[GRID] | None = None,
+        solutions: list[GRID] | None = None,
+        test_attempts: list[GRID] | None = None,
     ) -> None:
-        from viz import viz_many
+        from src.viz import viz_many
 
         if train_attempts:
             assert len(train_attempts) == len(self.train)

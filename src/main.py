@@ -4,15 +4,17 @@ from pydantic import BaseModel, Field
 import src.logging_config  # noqa: F401
 from src.llms.messages import (
     get_next_message_anthropic,
+    get_next_message_copilot,
     get_next_message_deepseek,
     get_next_message_gemini,
+    get_next_message_lmstudio,
     get_next_message_openai,
     get_next_message_openrouter,
 )
 from src.llms.models import Model
 from src.llms.structured import get_next_structure
 from src.log import log
-from src.models import GRID, Challenge, Example, Input
+from src.models import GRID, Challenge, Example, TestExample
 
 
 class InstructionsResponse(BaseModel):
@@ -208,7 +210,7 @@ def contents_from_example(
 def contents_from_challenge(
     training_examples: list[Example],
     training_example_attempts: list[GRID] | None,
-    test_inputs: list[Input],
+    test_inputs: list[TestExample],
     include_base64: bool,
     use_diffs: bool,
 ) -> list[dict]:

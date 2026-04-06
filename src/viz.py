@@ -1,11 +1,12 @@
+import base64
+import io
+
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Rectangle
-import io
-import base64
 
-from src.models import GRID, COLOR_MAP  # GRID is defined as: list[list[int]]
+from src.models import COLOR_MAP, GRID  # GRID is defined as: list[list[int]]
 
 
 def viz_grid(

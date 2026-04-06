@@ -1,13 +1,13 @@
-import base64
+import asyncio
 import json
+import logging
 import os
+import time
 import uuid
 from contextvars import ContextVar
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
-import logging
-from logging.handlers import RotatingFileHandler
-import time
 
 import logfire
 from dotenv import load_dotenv
@@ -43,25 +43,18 @@ logfire.configure(
 # -----------------------------------------------------------------------------
 
 
-def _get_default_log_file_path() -> Path:
-    # Default to project_root/logs/arc.log
-    # This file resides in project_root/src/logging_config.py
-    project_root = Path(__file__).resolve().parents[1]
-    return project_root / "logs" / "arc.log"
-
-
-LOG_FILE_PATH = Path(os.environ.get("LOG_FILE", _get_default_log_file_path()))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
-
-# Ensure directory exists
-LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 local_logger = logging.getLogger("arc_local")
 local_logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
-if not any(isinstance(h, RotatingFileHandler) for h in local_logger.handlers):
+
+def configure_local_log_path(log_file: Path) -> None:
+    """Point the rotating file handler at log_file (e.g. results/<stamp>/arc.log)."""
+    log_file = Path(log_file)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
     file_handler = RotatingFileHandler(
-        LOG_FILE_PATH, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     file_handler.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
     file_handler.setFormatter(
@@ -241,7 +234,15 @@ class _LocalSpanWrapper:
         duration = (
             (time.time() - self._start_time) if self._start_time is not None else None
         )
-        if exc is not None:
+        if isinstance(exc, asyncio.CancelledError):
+            _log_to_local_file(
+                "info",
+                f"span.cancelled {self._name}",
+                duration_seconds=duration,
+                error_type=type(exc).__name__,
+                **self._attributes,
+            )
+        elif exc is not None:
             _log_to_local_file(
                 "error",
                 f"span.error {self._name}",
@@ -271,7 +272,15 @@ class _LocalSpanWrapper:
         duration = (
             (time.time() - self._start_time) if self._start_time is not None else None
         )
-        if exc is not None:
+        if isinstance(exc, asyncio.CancelledError):
+            _log_to_local_file(
+                "info",
+                f"span.cancelled {self._name}",
+                duration_seconds=duration,
+                error_type=type(exc).__name__,
+                **self._attributes,
+            )
+        elif exc is not None:
             _log_to_local_file(
                 "error",
                 f"span.error {self._name}",
