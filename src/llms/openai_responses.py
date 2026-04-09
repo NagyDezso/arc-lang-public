@@ -6,7 +6,6 @@ import typing as T
 from openai import AsyncOpenAI
 from openai.types.responses.response import Response
 
-from src.llms.models import Model
 from src.log import log
 
 RESPONSES_EXTRA_HEADERS = {"OpenAI-Beta": "responses=v2"}
@@ -27,27 +26,11 @@ POLL_DEFAULT_INTERVAL = 2.0
 POLL_MAX_INTERVAL = 15.0
 POLL_TIMEOUT_SECONDS = 10_800.0
 
-OPENAI_MODEL_MAX_OUTPUT_TOKENS: dict[Model, int] = {
-    Model.gpt_4_5: 100_000,
-    Model.gpt_4_o: 100_000,
-    Model.o3_mini: 100_000,
-    Model.o3_mini_high: 100_000,
-    Model.o4_mini_high: 128_000,
-    Model.o3: 128_000,
-    Model.o3_pro: 128_000,
-    Model.o4_mini: 128_000,
-    Model.gpt_4_1: 128_000,
-    Model.gpt_4_1_mini: 128_000,
-    Model.gpt_5: 128_000,
-    Model.gpt_52: 128_000,
-    Model.gpt_5_pro: 200_000,
-}
-
 
 async def create_and_poll_response(
     client: AsyncOpenAI,
     *,
-    model: Model,
+    model_id: str,
     create_kwargs: dict[str, T.Any],
 ) -> Response:
     """
@@ -63,15 +46,13 @@ async def create_and_poll_response(
     extra_headers: dict[str, T.Any] = dict(create_kwargs.pop("extra_headers", {}) or {})
     headers = {**RESPONSES_EXTRA_HEADERS, **extra_headers}
 
-    is_gpt5 = model in {Model.gpt_5, Model.gpt_52, Model.gpt_5_pro}
+    is_gpt5 = model_id in {"gpt-5", "gpt-5.2", "gpt-5-pro"}
 
-    # Configure GPT-5 defaults: background mode with polling
     if is_gpt5:
         create_kwargs["store"] = True
         extra_body.setdefault("background", True)
 
-        # Set low verbosity for GPT-5-Pro to reduce token usage
-        if model == Model.gpt_5_pro:
+        if model_id == "gpt-5-pro":
             text_config = create_kwargs.setdefault("text", {})
             if isinstance(text_config, dict):
                 text_config.setdefault("verbosity", "low")
@@ -83,16 +64,18 @@ async def create_and_poll_response(
 
     log.info(
         "openai_request_config",
-        model=model.value,
+        model=model_id,
         background=extra_body.get("background", False),
         store=create_kwargs.get("store"),
-        verbosity=create_kwargs.get("text", {}).get("verbosity") if isinstance(create_kwargs.get("text"), dict) else None,
+        verbosity=create_kwargs.get("text", {}).get("verbosity")
+        if isinstance(create_kwargs.get("text"), dict)
+        else None,
         tools=len(create_kwargs.get("tools", [])),
     )
 
     return await _handle_polling_response(
         client=client,
-        model=model,
+        model_id=model_id,
         create_kwargs=create_kwargs,
         headers=headers,
     )
@@ -100,7 +83,7 @@ async def create_and_poll_response(
 
 async def _handle_polling_response(
     client: AsyncOpenAI,
-    model: Model,
+    model_id: str,
     create_kwargs: dict[str, T.Any],
     headers: dict[str, T.Any],
 ) -> Response:
@@ -114,7 +97,7 @@ async def _handle_polling_response(
 
             log.info(
                 "openai_response_created",
-                model=model.value,
+                model=model_id,
                 response_id=resp.id,
                 status=resp.status,
                 attempt=attempt + 1,
@@ -123,14 +106,15 @@ async def _handle_polling_response(
             poll_interval = POLL_DEFAULT_INTERVAL
             start_time = time.time()
 
-            # Poll while queued or in_progress
             while resp.status in {"queued", "in_progress"}:
                 if time.time() - start_time > POLL_TIMEOUT_SECONDS:
-                    raise TimeoutError(f"Response polling timeout after {POLL_TIMEOUT_SECONDS}s for {model.value}")
+                    raise TimeoutError(
+                        f"Response polling timeout after {POLL_TIMEOUT_SECONDS}s for {model_id}"
+                    )
 
                 log.info(
                     "openai_response_polling",
-                    model=model.value,
+                    model=model_id,
                     response_id=resp.id,
                     status=resp.status,
                 )
@@ -139,22 +123,22 @@ async def _handle_polling_response(
                 poll_interval = min(poll_interval * 1.5, POLL_MAX_INTERVAL)
                 resp = await client.responses.retrieve(resp.id, extra_headers=headers)
 
-            # Check final status
             log.info(
                 "openai_response_final",
-                model=model.value,
+                model=model_id,
                 response_id=resp.id,
                 status=resp.status,
             )
 
-            # Check for transient errors that should be retried
             if resp.status == "failed" and resp.error:
                 error_code = resp.error.code if resp.error else None
-                # Retry server errors and rate limits
-                if error_code in {"server_error", "rate_limit_exceeded"} and attempt < max_retries - 1:
+                if (
+                    error_code in {"server_error", "rate_limit_exceeded"}
+                    and attempt < max_retries - 1
+                ):
                     log.warning(
                         "openai_transient_error_retry",
-                        model=model.value,
+                        model=model_id,
                         response_id=resp.id,
                         error_code=error_code,
                         attempt=attempt + 1,
@@ -162,24 +146,26 @@ async def _handle_polling_response(
                         error_message=resp.error.message if resp.error else None,
                     )
                     await asyncio.sleep(retry_delay * (attempt + 1))
-                    continue  # Retry with new request
+                    continue
 
-            # Non-retryable errors
             if resp.status in POLL_ERROR_STATUSES:
-                raise RuntimeError(f"Response {resp.status} for {model.value}: {resp.error or resp.model_dump()}")
+                raise RuntimeError(
+                    f"Response {resp.status} for {model_id}: {resp.error or resp.model_dump()}"
+                )
             if resp.status == "requires_action":
-                raise RuntimeError(f"Response requires action (not supported) for {model.value}")
+                raise RuntimeError(
+                    f"Response requires action (not supported) for {model_id}"
+                )
 
             return resp
 
         except TimeoutError:
-            # Don't retry timeouts
             raise
         except Exception as e:
             if attempt < max_retries - 1:
                 log.warning(
                     "openai_request_error_retry",
-                    model=model.value,
+                    model=model_id,
                     attempt=attempt + 1,
                     max_retries=max_retries,
                     error=str(e),
@@ -188,20 +174,20 @@ async def _handle_polling_response(
             else:
                 raise
 
-    raise RuntimeError(f"Max retries exceeded for {model.value}")
+    raise RuntimeError(f"Max retries exceeded for {model_id}")
 
 
-def extract_structured_output(response: Response | dict[str, T.Any]) -> dict[str, T.Any]:
+def extract_structured_output(
+    response: Response | dict[str, T.Any],
+) -> dict[str, T.Any]:
     """Extract structured JSON from Response API (json_schema format)."""
     payload = response.model_dump() if isinstance(response, Response) else response
 
-    # Primary: Direct JSON field in content (json_schema format)
     for item in payload.get("output", []):
         for content in item.get("content") or []:
             if json_data := content.get("json"):
                 return json_data
 
-    # Fallback: Parse text as JSON
     for item in payload.get("output", []):
         for content in item.get("content") or []:
             if text := content.get("text"):
@@ -210,7 +196,6 @@ def extract_structured_output(response: Response | dict[str, T.Any]) -> dict[str
                 except json.JSONDecodeError:
                     continue
 
-    # Last resort: Parse output_text property
     if output_text := payload.get("output_text"):
         try:
             return json.loads(output_text)

@@ -1,102 +1,222 @@
-from enum import Enum
+from __future__ import annotations
 
+from anthropic.types import Usage
+from google.genai.types import GenerateContentResponseUsageMetadata
+from openai.types.completion_usage import CompletionUsage
+from openai.types.responses.response_usage import ResponseUsage
 from pydantic import BaseModel
+from pydantic_ai import RunUsage
+from xai_sdk.proto.v6.usage_pb2 import SamplingUsage
 
 
-class Model(str, Enum):
-    gpt_4_5 = "gpt-4.5-preview-2025-02-27"
-    gpt_4_o = "gpt-4o-2024-11-20"
-    o3_mini = "o3-mini-2025-01-31"
-    o3_mini_high = "o3-mini-2025-01-31_high"
-    o4_mini_high = "o4-mini_high"
-    o4_mini = "o4-mini"
-    o3 = "o3"
-    o3_pro = "o3-pro"
-    gpt_4_1 = "gpt-4.1"
-    gpt_4_1_mini = "gpt-4.1-mini"
-    gpt_5 = "gpt-5"
-    gpt_5_pro = "gpt-5-pro"
-    gpt_52 = "gpt-5.2"
-
-    sonnet_3_7 = "claude-3-7-sonnet-latest"
-    sonnet_3_5 = "claude-3-5-sonnet-latest"
-    sonnet_4_5 = "claude-sonnet-4-5-20250929"
-    gemini_2_5 = "gemini-2.5-pro"
-    gemini_2_5_flash_lite = "gemini-2.5-flash-lite"
-    copilot_gemini_3_flash_preview = "gemini-3-flash-preview"
-    copilot_gpt_5_mini = "gpt-5-mini"
-
-    gemini_3_flash = "gemini-3-flash-preview"
-    gemini_3_pro = "gemini-3-pro-preview"
-    gemini_3_pro_gateway = "gateway/google-vertex:gemini-3-pro-preview"
-    gemini_3_pro_openrouter = "google/gemini-3-pro-preview"
-
-    deepseek_chat = "deepseek-chat"
-    deepseek_reasoner = "deepseek-reasoner"
-
-    sonnet_4 = "claude-sonnet-4-20250514"
-    opus_4 = "claude-opus-4-20250514"
-
-    grok_4 = "grok-4"
-    grok_3_mini_fast = "grok-3-mini-fast"
-
-    openrouter_sonnet_3_7_thinking = "anthropic/claude-3.7-sonnet:thinking"
-    openrouter_sonnet_3_7 = "anthropic/claude-3.7-sonnet"
-    openrouter_gemini_2_5_free = "google/gemini-2.5-pro-exp-03-25:free"
-    openrouter_gemini_2_5 = "google/gemini-2.5-pro-preview-03-25"
-    openrouter_deepseek_3_free = "deepseek/deepseek-chat-v3-0324:free"
-    openrouter_deepseek_r1 = "deepseek/deepseek-r1"
-    openrouter_deepseek_r1_free = "deepseek/deepseek-r1:free"
-    openrouter_grok_v3 = "x-ai/grok-3-beta"
-    openrouter_quasar_alpha = "openrouter/quasar-alpha"
-    openrouter_optimus_alpha = "openrouter/optimus-alpha"
-
-    openrouter_qwen_235b = "qwen/qwen3-235b-a22b"
-    openrouter_qwen_235b_thinking = "qwen/qwen3-235b-a22b-thinking-2507"
-    openrouter_gemini_2_5_flash_lite = "google/gemini-2.5-flash-lite"
-    openrouter_grok_4 = "x-ai/grok-4"
-
-    openrouter_glm = "z-ai/glm-4.5-air:free"
-    openrouter_kimi_k2 = "moonshotai/kimi-k2"
-
-    kilo_gemini_3_flash_preview = "google/gemini-3-flash-preview"
-    kilo_glm_5 = "z-ai/glm-5:free"
-    kilo_minimax_m2_5 = "minimax/minimax-m2.5:free"
-    kilo_qwen_3_6_plus = "qwen/qwen3.6-plus:free"
-
-    openrouter_horizon_alpha = "openrouter/horizon-alpha"
-
-    openrouter_gpt_oss_120b = "openai/gpt-oss-120b:free"
-    openrouter_nvidia_nemotron_3 = "nvidia/nemotron-3-nano-30b-a3b:free"
-    openrouter_trinity_large = "arcee-ai/trinity-large-preview:free"
-
-    cerebras_gpt_oss_120b = "gpt-oss-120b"
-    groq_gpt_oss_120b = "openai/gpt-oss-120b"
-
-    lmstudio_qwen_3_5_27b = "qwen3.5-27b"
-    lmstudio_gemma_4_31b = "gemma-4-31b-it"
+def parse_llm(llm: str) -> tuple[str, str]:
+    """
+    Split `provider/model_id` on the first `/` only.
+    Example: openrouter/qwen/qwen3.5 -> ("openrouter", "qwen/qwen3.5")
+    """
+    llm = llm.strip()
+    if "/" not in llm:
+        raise ValueError(
+            f"Invalid llm {llm!r}: expected 'provider/model_id' (at least one '/')"
+        )
+    provider, model_id = llm.split("/", 1)
+    if not provider or not model_id:
+        raise ValueError(f"Invalid llm {llm!r}: empty provider or model_id")
+    return provider, model_id
 
 
-LMSTUDIO_OPENAI_BASE_URL = "http://127.0.0.1:4444/v1"
+class ModelPricing(BaseModel):
+    prompt_tokens: float
+    reasoning_tokens: float
+    completion_tokens: float
 
 
-class ModelConfig(BaseModel):
-    max_tokens: int
-    max_thinking_tokens: int | None
-
-
-model_config: dict[Model, ModelConfig] = {
-    Model.sonnet_3_5: ModelConfig(max_tokens=8_192, max_thinking_tokens=None),
-    Model.sonnet_3_7: ModelConfig(max_tokens=50_000, max_thinking_tokens=30_000),
-    Model.sonnet_4_5: ModelConfig(max_tokens=60_000, max_thinking_tokens=60_000),
-    Model.gpt_5: ModelConfig(max_tokens=1_000_000, max_thinking_tokens=None),
-    Model.gpt_52: ModelConfig(max_tokens=1_000_000, max_thinking_tokens=None),
-    Model.gpt_5_pro: ModelConfig(max_tokens=4_000_000, max_thinking_tokens=None),
-    Model.gemini_3_pro: ModelConfig(max_tokens=1_000_000, max_thinking_tokens=65_535),
-    Model.gemini_3_pro_gateway: ModelConfig(
-        max_tokens=1_000_000, max_thinking_tokens=32_768
-    ),  # Vertex AI limit
-    Model.gemini_3_pro_openrouter: ModelConfig(
-        max_tokens=1_048_576, max_thinking_tokens=None
-    ),  # OpenRouter manages this
+MODEL_PRICING_D: dict[str, ModelPricing] = {
+    "xai/grok-4": ModelPricing(
+        prompt_tokens=300 / 1_000_000,
+        reasoning_tokens=1_500 / 1_000_000,
+        completion_tokens=1_500 / 1_000_000,
+    ),
+    "xai/grok-3-mini-fast": ModelPricing(
+        prompt_tokens=60 / 1_000_000,
+        reasoning_tokens=400 / 1_000_000,
+        completion_tokens=400 / 1_000_000,
+    ),
+    "openai/o3": ModelPricing(
+        prompt_tokens=5_000 / 1_000_000,
+        reasoning_tokens=25_000 / 1_000_000,
+        completion_tokens=15_000 / 1_000_000,
+    ),
+    "openai/o3-pro": ModelPricing(
+        prompt_tokens=1_5_00 / 1_000_000,
+        reasoning_tokens=6_000 / 1_000_000,
+        completion_tokens=6_000 / 1_000_000,
+    ),
+    "openai/o4-mini": ModelPricing(
+        prompt_tokens=300 / 1_000_000,
+        reasoning_tokens=1_200 / 1_000_000,
+        completion_tokens=1_200 / 1_000_000,
+    ),
+    "openai/gpt-4.1": ModelPricing(
+        prompt_tokens=250 / 1_000_000,
+        reasoning_tokens=1_000 / 1_000_000,
+        completion_tokens=1_000 / 1_000_000,
+    ),
+    "openai/gpt-4.1-mini": ModelPricing(
+        prompt_tokens=150 / 1_000_000,
+        reasoning_tokens=600 / 1_000_000,
+        completion_tokens=600 / 1_000_000,
+    ),
+    "openai/gpt-5": ModelPricing(
+        prompt_tokens=125 / 1_000_000,
+        reasoning_tokens=1_000 / 1_000_000,
+        completion_tokens=1_000 / 1_000_000,
+    ),
+    "openai/gpt-5.2": ModelPricing(
+        prompt_tokens=175 / 1_000_000,
+        reasoning_tokens=1_400 / 1_000_000,
+        completion_tokens=1_400 / 1_000_000,
+    ),
+    "openai/gpt-5-pro": ModelPricing(
+        prompt_tokens=200 / 1_000_000,
+        reasoning_tokens=1_200 / 1_000_000,
+        completion_tokens=1_200 / 1_000_000,
+    ),
+    "anthropic/claude-sonnet-4-5-20250929": ModelPricing(
+        prompt_tokens=3_000 / 1_000_000,
+        reasoning_tokens=15_000 / 1_000_000,
+        completion_tokens=15_000 / 1_000_000,
+    ),
+    "gemini/gemini-2.5-pro": ModelPricing(
+        prompt_tokens=1_250 / 1_000_000,
+        reasoning_tokens=10_000 / 1_000_000,
+        completion_tokens=10_000 / 1_000_000,
+    ),
+    "gemini/gemini-2.5-flash-lite": ModelPricing(
+        prompt_tokens=75 / 1_000_000,
+        reasoning_tokens=300 / 1_000_000,
+        completion_tokens=300 / 1_000_000,
+    ),
+    "gemini/gemini-3-flash-preview": ModelPricing(
+        prompt_tokens=2_500 / 1_000_000,
+        reasoning_tokens=15_000 / 1_000_000,
+        completion_tokens=15_000 / 1_000_000,
+    ),
+    "gemini/gemini-3-pro-preview": ModelPricing(
+        prompt_tokens=2_500 / 1_000_000,
+        reasoning_tokens=15_000 / 1_000_000,
+        completion_tokens=15_000 / 1_000_000,
+    ),
+    "gateway/google-vertex:gemini-3-pro-preview": ModelPricing(
+        prompt_tokens=2_500 / 1_000_000,
+        reasoning_tokens=15_000 / 1_000_000,
+        completion_tokens=15_000 / 1_000_000,
+    ),
+    "openrouter/google/gemini-3-pro-preview": ModelPricing(
+        prompt_tokens=2_000 / 1_000_000,
+        reasoning_tokens=0.0,
+        completion_tokens=12_000 / 1_000_000,
+    ),
+    "lmstudio/qwen3.5-27b": ModelPricing(
+        prompt_tokens=0.0,
+        reasoning_tokens=0.0,
+        completion_tokens=0.0,
+    ),
 }
+
+
+def _safe_int(value: int | None) -> int:
+    return value if value is not None else 0
+
+
+class TokenUsage(BaseModel):
+    """Unified token accounting for all LLM backends."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
+
+    @classmethod
+    def from_responses_api(cls, usage: ResponseUsage | None) -> TokenUsage:
+        if usage is None:
+            return cls()
+        return cls(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            reasoning_tokens=usage.input_tokens_details.cached_tokens,
+            cached_tokens=usage.output_tokens_details.reasoning_tokens,
+            total_tokens=usage.total_tokens,
+        )
+
+    @classmethod
+    def from_chat_completion(cls, usage: CompletionUsage | None) -> TokenUsage:
+        if usage is None:
+            return cls()
+        ptd = usage.prompt_tokens_details
+        cached = _safe_int(ptd.cached_tokens if ptd else None)
+        ctd = usage.completion_tokens_details
+        rt = _safe_int(ctd.reasoning_tokens if ctd else None)
+        return cls(
+            input_tokens=usage.prompt_tokens,
+            output_tokens=usage.completion_tokens,
+            reasoning_tokens=rt,
+            cached_tokens=cached,
+            total_tokens=usage.total_tokens,
+        )
+
+    @classmethod
+    def from_anthropic(cls, usage: Usage | None) -> TokenUsage:
+        if usage is None:
+            return cls()
+        return cls(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_tokens=_safe_int(usage.cache_creation_input_tokens),
+            total_tokens=usage.input_tokens + usage.output_tokens,
+        )
+
+    @classmethod
+    def from_xai_grok(cls, usage: SamplingUsage) -> TokenUsage:
+        return cls(
+            input_tokens=usage.prompt_text_tokens,
+            output_tokens=usage.completion_tokens,
+            cached_tokens=usage.cached_prompt_text_tokens,
+            total_tokens=usage.total_tokens,
+        )
+
+    @classmethod
+    def from_gemini_metadata(
+        cls, meta: GenerateContentResponseUsageMetadata | None
+    ) -> TokenUsage:
+        if meta is None:
+            return cls()
+        return cls(
+            input_tokens=_safe_int(meta.prompt_token_count),
+            output_tokens=_safe_int(meta.candidates_token_count),
+            cached_tokens=_safe_int(meta.cached_content_token_count),
+            total_tokens=_safe_int(meta.total_token_count),
+        )
+
+    @classmethod
+    def from_pydantic_ai_usage(cls, usage: RunUsage | None) -> TokenUsage:
+        if usage is None:
+            return cls()
+        return cls(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_tokens=usage.cache_read_tokens + usage.cache_write_tokens,
+            total_tokens=usage.total_tokens,
+        )
+
+    def cost(self, llm: str) -> float:
+        pricing = MODEL_PRICING_D.get(llm)
+        if pricing is None:
+            return 0.0
+        return round(
+            self.input_tokens * pricing.prompt_tokens
+            + self.reasoning_tokens * pricing.reasoning_tokens
+            + self.output_tokens * pricing.completion_tokens,
+            2,
+        )

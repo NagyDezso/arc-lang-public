@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from pydantic import BaseModel
 
 GRID = list[list[int]]
@@ -146,9 +144,8 @@ Input:
     @staticmethod
     async def grid_from_str_using_llm(s: str) -> GRID:
         from src.llms.messages import extract_grid_from_text
-        from src.llms.models import Model
 
-        return await extract_grid_from_text(model=Model.o4_mini, text=s)
+        return await extract_grid_from_text(llm="openai/o4-mini", text=s)
 
     @staticmethod
     def grid_to_base64(grid: GRID) -> str:
@@ -169,49 +166,3 @@ COLOR_MAP: dict[int, str] = {
     8: "#9d00ff",  # purple
     9: "#870C25",  # brown
 }
-
-
-if __name__ == "__main__":
-    from pydantic import TypeAdapter
-
-    challenges_dir = (
-        Path(__file__).parent.parent
-        / "data"
-        / "arc-prize-2024"
-        / "arc-agi_training_challenges.json"
-    )
-    print(challenges_dir)
-    challenges_d = TypeAdapter(dict[str, Challenge]).validate_json(
-        challenges_dir.read_text()
-    )
-
-    _grid = [
-        [0, 0, 0, 5, 0],
-        [0, 5, 0, 0, 0],
-        [0, 0, 0, 0, 0],
-        [0, 5, 0, 0, 0],
-        [0, 0, 0, 0, 0],
-    ]
-    print(Challenge.grid_to_str(_grid))
-
-    print("testing prompt")
-
-    challenge = list(challenges_d.values())[0]
-    # challenge.viz()
-    print(challenge.to_basic_prompt(use_cot=False)[0])
-
-    input_str = """Some header text...
-    0 0 0 5 0
-    0 5 0 0 0
-    0 0 0 0 0
-    0 5 0 0 0
-    0 0 0 0 0
-    random-text-here
-    0 0 0 5 0
-    0 5 0 0 0
-    0 0 0 0 0
-    0 5 0 0 0
-    0 0 0 0 0
-    Some footer text."""
-
-    print(challenge.grid_from_str(input_str))

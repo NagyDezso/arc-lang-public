@@ -1,31 +1,31 @@
-from src.configs.models import Model, RunConfig, Step, StepRevision, StepRevisionPool
+from src.configs.models import RunConfig, Step, StepRevision, StepRevisionPool
 
-model = Model.groq_gpt_oss_120b
+llm = "groq/openai/gpt-oss-120b"
 
 mini_config_big = RunConfig(
-    final_follow_model=model,
+    final_follow_llm=llm,
     final_follow_times=10,
     max_concurrent_tasks=2,
     steps=[
         Step(
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=30,
             timeout_secs=300,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=30,
             timeout_secs=300,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=40,
             timeout_secs=300,
             include_base64=False,
@@ -33,8 +33,8 @@ mini_config_big = RunConfig(
         ),
         StepRevision(
             top_scores_used=10,
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times_per_top_score=5,
             timeout_secs=300,
             include_base64=False,
@@ -42,8 +42,8 @@ mini_config_big = RunConfig(
         ),
         StepRevisionPool(
             top_scores_used=5,
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=10,
             timeout_secs=300,
             include_base64=False,
@@ -51,8 +51,8 @@ mini_config_big = RunConfig(
         ),
         StepRevision(
             top_scores_used=10,
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times_per_top_score=5,
             timeout_secs=300,
             include_base64=False,
@@ -60,8 +60,8 @@ mini_config_big = RunConfig(
         ),
         StepRevisionPool(
             top_scores_used=5,
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=10,
             timeout_secs=300,
             include_base64=False,
@@ -71,13 +71,13 @@ mini_config_big = RunConfig(
 )
 
 mini_config = RunConfig(
-    final_follow_model=model,
+    final_follow_llm=llm,
     final_follow_times=3,
     max_concurrent_tasks=2,
     steps=[
         Step(
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=3,
             timeout_secs=300,
             include_base64=False,
@@ -85,8 +85,8 @@ mini_config = RunConfig(
         ),
         StepRevision(
             top_scores_used=3,
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times_per_top_score=1,
             timeout_secs=300,
             include_base64=False,
@@ -94,8 +94,8 @@ mini_config = RunConfig(
         ),
         StepRevisionPool(
             top_scores_used=3,
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=1,
             timeout_secs=300,
             include_base64=False,
@@ -105,13 +105,13 @@ mini_config = RunConfig(
 )
 
 mini_for_testing = RunConfig(
-    final_follow_model=model,
+    final_follow_llm=llm,
     final_follow_times=2,
     max_concurrent_tasks=2,
     steps=[
         Step(
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=2,
             timeout_secs=300,
             include_base64=False,
@@ -119,8 +119,8 @@ mini_for_testing = RunConfig(
         ),
         StepRevision(
             top_scores_used=2,
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times_per_top_score=1,
             timeout_secs=300,
             include_base64=False,
@@ -128,8 +128,8 @@ mini_for_testing = RunConfig(
         ),
         StepRevisionPool(
             top_scores_used=2,
-            instruction_model=model,
-            follow_model=model,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=1,
             timeout_secs=300,
             include_base64=False,

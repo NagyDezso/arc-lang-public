@@ -139,9 +139,9 @@ _original_debug = logfire.debug
 _original_info = logfire.info
 _original_warn = logfire.warn
 _original_error = logfire.error
-_original_trace = getattr(logfire, "trace", None)
-_original_notice = getattr(logfire, "notice", None)
-_original_fatal = getattr(logfire, "fatal", None)
+_original_trace = logfire.trace
+_original_notice = logfire.notice
+_original_fatal = logfire.fatal
 
 
 def _add_context_to_kwargs(**kwargs: Any) -> dict[str, Any]:
@@ -181,37 +181,33 @@ def _error(msg: str, **kwargs: Any) -> Any:
     return _original_error(msg, **updated)
 
 
+def _trace(msg: str, **kwargs: Any) -> Any:
+    updated = _add_context_to_kwargs(**kwargs)
+    _log_to_local_file("debug", msg, **updated)
+    return _original_trace(msg, **updated)
+
+
+def _notice(msg: str, **kwargs: Any) -> Any:
+    updated = _add_context_to_kwargs(**kwargs)
+    _log_to_local_file("info", msg, **updated)
+    return _original_notice(msg, **updated)
+
+
+def _fatal(msg: str, **kwargs: Any) -> Any:
+    updated = _add_context_to_kwargs(**kwargs)
+    _log_to_local_file("fatal", msg, **updated)
+    return _original_fatal(msg, **updated)
+
+
 # Patch the main logging methods
 logfire.debug = _debug
 logfire.info = _info
 logfire.warn = _warn
 logfire.error = _error
+logfire.trace = _trace
+logfire.notice = _notice
+logfire.fatal = _fatal
 
-# Patch optional methods if they exist
-if _original_trace:
-
-    def _trace(msg: str, **kwargs: Any) -> Any:
-        updated = _add_context_to_kwargs(**kwargs)
-        _log_to_local_file("debug", msg, **updated)
-        return _original_trace(msg, **updated)
-
-    logfire.trace = _trace
-if _original_notice:
-
-    def _notice(msg: str, **kwargs: Any) -> Any:
-        updated = _add_context_to_kwargs(**kwargs)
-        _log_to_local_file("info", msg, **updated)
-        return _original_notice(msg, **updated)
-
-    logfire.notice = _notice
-if _original_fatal:
-
-    def _fatal(msg: str, **kwargs: Any) -> Any:
-        updated = _add_context_to_kwargs(**kwargs)
-        _log_to_local_file("fatal", msg, **updated)
-        return _original_fatal(msg, **updated)
-
-    logfire.fatal = _fatal
 
 # Also patch span to include context
 _original_span = logfire.span
@@ -235,13 +231,7 @@ class _LocalSpanWrapper:
             (time.time() - self._start_time) if self._start_time is not None else None
         )
         if isinstance(exc, asyncio.CancelledError):
-            _log_to_local_file(
-                "info",
-                f"span.cancelled {self._name}",
-                duration_seconds=duration,
-                error_type=type(exc).__name__,
-                **self._attributes,
-            )
+            pass
         elif exc is not None:
             _log_to_local_file(
                 "error",
@@ -273,13 +263,7 @@ class _LocalSpanWrapper:
             (time.time() - self._start_time) if self._start_time is not None else None
         )
         if isinstance(exc, asyncio.CancelledError):
-            _log_to_local_file(
-                "info",
-                f"span.cancelled {self._name}",
-                duration_seconds=duration,
-                error_type=type(exc).__name__,
-                **self._attributes,
-            )
+            pass
         elif exc is not None:
             _log_to_local_file(
                 "error",

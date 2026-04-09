@@ -1,29 +1,29 @@
-from src.configs.models import Model, RunConfig, Step, StepRevision, StepRevisionPool
+from src.configs.models import RunConfig, Step, StepRevision, StepRevisionPool
 
 gemini3pro_config_prod = RunConfig(
-    final_follow_model=Model.gemini_3_pro,
+    final_follow_llm="gemini/gemini-3-pro-preview",
     final_follow_times=3,
     max_concurrent_tasks=120,
     steps=[
         Step(
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=3,
             timeout_secs=10_800,
             include_base64=False,
@@ -31,8 +31,8 @@ gemini3pro_config_prod = RunConfig(
         ),
         # StepRevision(
         #     top_scores_used=5,
-        #     instruction_model=Model.gemini_3_pro,
-        #     follow_model=Model.gemini_3_pro,
+        #     instruction_llm="gemini/gemini-3-pro-preview",
+        #     follow_llm="gemini/gemini-3-pro-preview",
         #     times_per_top_score=1,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -40,8 +40,8 @@ gemini3pro_config_prod = RunConfig(
         # ),
         StepRevisionPool(
             top_scores_used=3,
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
@@ -51,29 +51,29 @@ gemini3pro_config_prod = RunConfig(
 )
 
 gemini3pro_gateway_prod = RunConfig(
-    final_follow_model=Model.gemini_3_pro_gateway,
+    final_follow_llm="gateway/google-vertex:gemini-3-pro-preview",
     final_follow_times=3,
     max_concurrent_tasks=120,
     steps=[
         Step(
-            instruction_model=Model.gemini_3_pro_gateway,
-            follow_model=Model.gemini_3_pro_gateway,
+            instruction_llm="gateway/google-vertex:gemini-3-pro-preview",
+            follow_llm="gateway/google-vertex:gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro_gateway,
-            follow_model=Model.gemini_3_pro_gateway,
+            instruction_llm="gateway/google-vertex:gemini-3-pro-preview",
+            follow_llm="gateway/google-vertex:gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro_gateway,
-            follow_model=Model.gemini_3_pro_gateway,
+            instruction_llm="gateway/google-vertex:gemini-3-pro-preview",
+            follow_llm="gateway/google-vertex:gemini-3-pro-preview",
             times=3,
             timeout_secs=10_800,
             include_base64=False,
@@ -81,8 +81,8 @@ gemini3pro_gateway_prod = RunConfig(
         ),
         # StepRevision(
         #     top_scores_used=5,
-        #     instruction_model=Model.gpt_5_pro,
-        #     follow_model=Model.gpt_5_pro,
+        #     instruction_llm="openai/gpt-5-pro",
+        #     follow_llm="openai/gpt-5-pro",
         #     times_per_top_score=1,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -90,8 +90,8 @@ gemini3pro_gateway_prod = RunConfig(
         # ),
         StepRevisionPool(
             top_scores_used=3,
-            instruction_model=Model.gemini_3_pro_gateway,
-            follow_model=Model.gemini_3_pro_gateway,
+            instruction_llm="gateway/google-vertex:gemini-3-pro-preview",
+            follow_llm="gateway/google-vertex:gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
@@ -101,29 +101,29 @@ gemini3pro_gateway_prod = RunConfig(
 )
 
 gemini3pro_openrouter_prod = RunConfig(
-    final_follow_model=Model.gemini_3_pro_openrouter,
+    final_follow_llm="openrouter/google/gemini-3-pro-preview",
     final_follow_times=3,
     max_concurrent_tasks=120,
     steps=[
         Step(
-            instruction_model=Model.gemini_3_pro_openrouter,
-            follow_model=Model.gemini_3_pro_openrouter,
+            instruction_llm="openrouter/google/gemini-3-pro-preview",
+            follow_llm="openrouter/google/gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro_openrouter,
-            follow_model=Model.gemini_3_pro_openrouter,
+            instruction_llm="openrouter/google/gemini-3-pro-preview",
+            follow_llm="openrouter/google/gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro_openrouter,
-            follow_model=Model.gemini_3_pro_openrouter,
+            instruction_llm="openrouter/google/gemini-3-pro-preview",
+            follow_llm="openrouter/google/gemini-3-pro-preview",
             times=3,
             timeout_secs=10_800,
             include_base64=False,
@@ -131,8 +131,8 @@ gemini3pro_openrouter_prod = RunConfig(
         ),
         # StepRevision(
         #     top_scores_used=5,
-        #     instruction_model=Model.gpt_5_pro,
-        #     follow_model=Model.gpt_5_pro,
+        #     instruction_llm="openai/gpt-5-pro",
+        #     follow_llm="openai/gpt-5-pro",
         #     times_per_top_score=1,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -140,8 +140,8 @@ gemini3pro_openrouter_prod = RunConfig(
         # ),
         StepRevisionPool(
             top_scores_used=3,
-            instruction_model=Model.gemini_3_pro_openrouter,
-            follow_model=Model.gemini_3_pro_openrouter,
+            instruction_llm="openrouter/google/gemini-3-pro-preview",
+            follow_llm="openrouter/google/gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
@@ -151,29 +151,29 @@ gemini3pro_openrouter_prod = RunConfig(
 )
 
 gemini3pro_config_small = RunConfig(
-    final_follow_model=Model.gemini_3_pro,
+    final_follow_llm="gemini/gemini-3-pro-preview",
     final_follow_times=3,
     max_concurrent_tasks=120,
     steps=[
         Step(
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=1,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=1,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=3,
             timeout_secs=10_800,
             include_base64=False,
@@ -181,8 +181,8 @@ gemini3pro_config_small = RunConfig(
         ),
         # StepRevision(
         #     top_scores_used=5,
-        #     instruction_model=Model.gemini_3_pro,
-        #     follow_model=Model.gemini_3_pro,
+        #     instruction_llm="gemini/gemini-3-pro-preview",
+        #     follow_llm="gemini/gemini-3-pro-preview",
         #     times_per_top_score=1,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -190,8 +190,8 @@ gemini3pro_config_small = RunConfig(
         # ),
         StepRevisionPool(
             top_scores_used=3,
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=2,
             timeout_secs=10_800,
             include_base64=False,
@@ -201,29 +201,29 @@ gemini3pro_config_small = RunConfig(
 )
 
 gemini3pro_config_old = RunConfig(
-    final_follow_model=Model.gemini_3_pro,
+    final_follow_llm="gemini/gemini-3-pro-preview",
     final_follow_times=5,
     max_concurrent_tasks=10,
     steps=[
         Step(
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=20,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=20,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         # Step(
-        #     instruction_model=Model.gemini_3_pro,
-        #     follow_model=Model.gemini_3_pro,
+        #     instruction_llm="gemini/gemini-3-pro-preview",
+        #     follow_llm="gemini/gemini-3-pro-preview",
         #     times=20,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -231,8 +231,8 @@ gemini3pro_config_old = RunConfig(
         # ),
         StepRevision(
             top_scores_used=5,
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times_per_top_score=2,
             timeout_secs=10_800,
             include_base64=False,
@@ -240,8 +240,8 @@ gemini3pro_config_old = RunConfig(
         ),
         StepRevisionPool(
             top_scores_used=5,
-            instruction_model=Model.gemini_3_pro,
-            follow_model=Model.gemini_3_pro,
+            instruction_llm="gemini/gemini-3-pro-preview",
+            follow_llm="gemini/gemini-3-pro-preview",
             times=10,
             timeout_secs=10_800,
             include_base64=False,
@@ -249,8 +249,8 @@ gemini3pro_config_old = RunConfig(
         ),
         # StepRevision(
         #     top_scores_used=5,
-        #     instruction_model=Model.gemini_3_pro,
-        #     follow_model=Model.gemini_3_pro,
+        #     instruction_llm="gemini/gemini-3-pro-preview",
+        #     follow_llm="gemini/gemini-3-pro-preview",
         #     times_per_top_score=2,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -258,8 +258,8 @@ gemini3pro_config_old = RunConfig(
         # ),
         # StepRevisionPool(
         #     top_scores_used=5,
-        #     instruction_model=Model.gemini_3_pro,
-        #     follow_model=Model.gemini_3_pro,
+        #     instruction_llm="gemini/gemini-3-pro-preview",
+        #     follow_llm="gemini/gemini-3-pro-preview",
         #     times=5,
         #     timeout_secs=10_800,
         #     include_base64=False,

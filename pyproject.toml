@@ -10,30 +10,29 @@ dependencies = [
     "devtools>=0.12.2",
     "google-genai>=1.54.0",
     "logfire>=4.16.0",
-    "matplotlib>=3.10.1",
+    "matplotlib",
     "openai>=2.9.0",
     "pydantic>=2.12.5",
     "pydantic-ai>=1.28.0",
     "python-dotenv>=1.1.0",
+    "tqdm>=4.66.0",
     "xai-sdk>=1.5.0",
 ]
 
 [dependency-groups]
-dev = ["ruff>=0.11.4"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.11.4",
+]
 
-
-[tool.mypy]
-plugins = 'pydantic.mypy'
-strict = true
-check_untyped_defs = true
-disallow_untyped_calls = true
-disallow_incomplete_defs = true
-disallow_untyped_defs = true
-disallow_untyped_decorators = false
-disallow_subclassing_any = false
-ignore_missing_imports = true
-follow_imports = 'skip'
-exclude = ["venv", ".venv", "alembic", "app/dbs/sql_gen/gen/db.py"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+markers = [
+    "integration: calls external HTTP APIs; requires RUN_INTEGRATION=1 and provider keys",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -69,9 +68,6 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-unfixable = [
-    "F401", # unused imports
-]
 select = [
     "E",      # pycodestyle errors
     "W",      # pycodestyle warnings
@@ -84,11 +80,4 @@ select = [
 ]
 ignore = [
     "E501", # line too long, handled by black
-    "B008", # do not perform function calls in argument defaults
-    "W191", # indentation contains tabs
-    "B904", # Allow raising exceptions without from e, for HTTPException
 ]
-
-[tool.ruff.lint.pyupgrade]
-# Preserve types, even if a file imports `from __future__ import annotations`.
-keep-runtime-typing = true

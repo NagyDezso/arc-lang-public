@@ -7,13 +7,14 @@ import typing as T
 import uuid
 from datetime import datetime
 from pathlib import Path
-from types import CoroutineType
 
 import asyncpg
 from pydantic import BaseModel, TypeAdapter
+from tqdm.asyncio import tqdm as tqdm_async
 
 from src.async_utils.semaphore_monitor import MonitoredSemaphore
 from src.configs.models import RunConfig, Step, StepRevision, StepRevisionPool
+from src.llms.models import parse_llm
 from src.llms.structured import get_next_structure
 from src.log import log
 
@@ -24,28 +25,21 @@ from src.main import (
     INTUITIVE_PROMPT,
     Example,
     InstructionsResponse,
-    Model,
     ReviseInstructionsResponse,
     contents_from_challenge,
     output_grid_from_instructions,
 )
 from src.models import Challenge, TestExample
-from src.run_progress import (
-    RunProgress,
-    attach_run_progress,
-    detach_run_progress,
-    notify_task_finished,
-)
 from src.submit import ChallengeSolution, evaluate_solutions
 from src.utils import random_str
 
 TT = T.TypeVar("TT")
 
 
-def filter_out_exceptions(
+def filter_out_exceptions[TT](
     lst: T.Sequence[TT | BaseException], description: str
 ) -> list[TT]:
-    exceptions = [instr for instr in lst if isinstance(instr, Exception)]
+    exceptions = [instr for instr in lst if isinstance(instr, BaseException)]
     for e in exceptions:
         error_kwargs: dict[str, T.Any] = {
             "error_type": type(e).__name__,
@@ -55,13 +49,8 @@ def filter_out_exceptions(
             error_kwargs["traceback"] = "".join(
                 traceback.format_exception(type(e), e, e.__traceback__)
             )
-
         log.error(f"{description}: {type(e).__name__}", **error_kwargs)
-    return [
-        i
-        for i in lst
-        if not isinstance(i, Exception) and not isinstance(i, BaseException)
-    ]
+    return [i for i in lst if not isinstance(i, BaseException)]
 
 
 def challenge_ids_by_size(challenges_by_id: dict[str, Challenge]) -> list[str]:
@@ -69,30 +58,17 @@ def challenge_ids_by_size(challenges_by_id: dict[str, Challenge]) -> list[str]:
     return sorted(challenges_by_id.keys(), key=lambda k: challenges_by_id[k].size())
 
 
-def parse_model(model_arg: str) -> Model:
-    """Accept either enum key (e.g. groq_kimi_k2) or model value."""
-    try:
-        return Model[model_arg]
-    except KeyError:
-        pass
-
-    for model in Model:
-        if model.value == model_arg:
-            return model
-
-    raise ValueError(model_arg)
-
-
-def with_model(config: RunConfig, model: Model) -> RunConfig:
-    """Return a copy of config with all models overridden."""
+def with_llm(config: RunConfig, llm: str) -> RunConfig:
+    """Return a copy of config with every step's LLM overridden."""
+    parse_llm(llm)
     updated_steps: list[Step | StepRevision | StepRevisionPool] = []
     for step in config.steps:
         updated_steps.append(
-            step.model_copy(update={"instruction_model": model, "follow_model": model})
+            step.model_copy(update={"instruction_llm": llm, "follow_llm": llm})
         )
 
     return config.model_copy(
-        update={"final_follow_model": model, "steps": updated_steps},
+        update={"final_follow_llm": llm, "steps": updated_steps},
     )
 
 
@@ -100,7 +76,7 @@ class ExampleScore(BaseModel):
     example: Example
     response_output_grid: GRID
     score: float
-    model: Model
+    llm: str
 
 
 REVISION_PROMPT = """
@@ -121,7 +97,7 @@ class InstructionsScore(BaseModel):
     id: str
 
     instructions: str
-    model: Model
+    llm: str
     example_scores: list[ExampleScore]
     score: float
 
@@ -157,7 +133,10 @@ class InstructionsScore(BaseModel):
             ]
 
             step_json = json.dumps(
-                {**self.step.model_dump(), "type": type(self.step).__name__}
+                {
+                    **self.step.model_dump(),
+                    "type": type(self.step).__name__,
+                }
             )
 
             await conn.execute(
@@ -167,7 +146,7 @@ class InstructionsScore(BaseModel):
                 """,
                 self.id,
                 self.instructions,
-                self.model.value,  # Use the string value of the enum
+                self.llm,
                 json.dumps(example_scores_json),  # Convert to JSON string for JSONB
                 self.score,
                 c.task_id,
@@ -242,7 +221,7 @@ class InstructionsScore(BaseModel):
             await get_next_structure(
                 structure=ReviseInstructionsResponse,
                 messages=messages,
-                model=step.instruction_model,
+                llm=step.instruction_llm,
             )
         ).revised_instructions
 
@@ -353,7 +332,7 @@ async def get_example_score(
     test_example: Example,
     include_base64: bool,
     use_diffs: bool,
-    model: Model,
+    llm: str,
 ) -> ExampleScore:
     from src.models import COLOR_MAP
     from src.viz import viz_many
@@ -363,7 +342,7 @@ async def get_example_score(
         training_examples=training_examples,
         test_input_grid=test_example.input,
         include_base64=include_base64,
-        model=model,
+        llm=llm,
         use_diffs=use_diffs,
         is_perfect=True,
     )
@@ -392,7 +371,7 @@ async def get_example_score(
         example=test_example,
         response_output_grid=grid_output,
         score=similarity_score,
-        model=model,
+        llm=llm,
     )
     return example_score
 
@@ -412,7 +391,7 @@ async def score_instructions_on_challenge(
                     test_example=temp_test,
                     include_base64=step.include_base64,
                     use_diffs=step.use_diffs,
-                    model=step.follow_model,
+                    llm=step.follow_llm,
                 )
             )
         example_scores = await asyncio.gather(*futures, return_exceptions=True)
@@ -428,7 +407,7 @@ async def score_instructions_on_challenge(
             "Instructions scored",
             score=score,
             example_count=len(example_scores),
-            model=step.instruction_model.value,
+            llm=step.instruction_llm,
         )
 
         instructions_score = InstructionsScore(
@@ -436,7 +415,7 @@ async def score_instructions_on_challenge(
             instructions=instructions,
             example_scores=example_scores,
             score=score,
-            model=step.instruction_model,
+            llm=step.instruction_llm,
             step=step,
         )
         await instructions_score.save_to_db(c=c)
@@ -473,7 +452,7 @@ async def get_instructions_from_challenge(c: Challenge, step: Step) -> str:
         instructions = await get_next_structure(
             structure=InstructionsResponse,
             messages=messages,
-            model=step.instruction_model,
+            llm=step.instruction_llm,
         )
         return instructions.instructions
 
@@ -567,7 +546,7 @@ async def get_pooling_instruction_from_scores(
         await get_next_structure(
             structure=ReviseInstructionsResponse,
             messages=messages,
-            model=step.instruction_model,
+            llm=step.instruction_llm,
         )
     ).revised_instructions
 
@@ -575,7 +554,7 @@ async def get_pooling_instruction_from_scores(
 class Guess(BaseModel):
     grids: list[GRID]
     instructions_scores: list[InstructionsScore]
-    model: Model
+    llm: str
 
     async def save_to_db(self, avg_score: float, scores: list[float]) -> None:
         # Get database connection string from environment variable
@@ -605,7 +584,7 @@ class Guess(BaseModel):
                 self.instructions_scores[
                     0
                 ].id,  # FK: schema has one id; use first test case
-                self.model.value,  # Use the string value of the enum
+                self.llm,
                 avg_score,
                 json.dumps(scores),  # Convert scores list to JSON string for JSONB
             )
@@ -655,7 +634,7 @@ async def get_diverse_attempts(
         futures.append(
             output_grid_from_instructions(
                 instructions=score_to_use.instructions,
-                model=config.final_follow_model,
+                llm=config.final_follow_llm,
                 include_base64=step.include_base64,
                 training_examples=c.train,
                 test_input_grid=test_input.input,
@@ -664,23 +643,15 @@ async def get_diverse_attempts(
             )
         )
     log.debug("scores to use for final grids", scores=scores_to_use)
-    _final_output_grids = await asyncio.gather(*futures, return_exceptions=True)
-    final_output_grids_and_scores: list[tuple[GRID, InstructionsScore]] = []
-    for i, g in enumerate(_final_output_grids):
-        if isinstance(g, Exception):
-            log.error(
-                f"FINAL OUTPUT GRID GETTING: {type(g).__name__}",
-                error_type=type(g).__name__,
-                error_message=str(g),
-                traceback=traceback.format_exc(),
-            )
-        else:
-            final_output_grids_and_scores.append((g, scores_to_use[i]))
+    final_output_grids = await asyncio.gather(*futures, return_exceptions=True)
+    final_output_grids = filter_out_exceptions(
+        final_output_grids, "Exception in get_diverse_attempts (final output grids)"
+    )
+    if not final_output_grids:
+        log.error(f"No final output grids found for {c.task_id}")
 
-    if not final_output_grids_and_scores:
-        raise Exception("No final output grids!!!")
-    first_grid = final_output_grids_and_scores[0]
-    for g in final_output_grids_and_scores:
+    first_grid = final_output_grids[0]
+    for g in final_output_grids:
         if g[0] != first_grid[0]:
             return first_grid, g
     return first_grid, first_grid
@@ -721,12 +692,12 @@ async def return_answer(
 
     first_prediction_guess = Guess(
         instructions_scores=[g[1] for g in first_prediction],
-        model=config.final_follow_model,
+        llm=config.final_follow_llm,
         grids=[g[0] for g in first_prediction],
     )
     second_prediction_guess = Guess(
         instructions_scores=[g[1] for g in second_prediction],
-        model=config.final_follow_model,
+        llm=config.final_follow_llm,
         grids=[g[0] for g in second_prediction],
     )
 
@@ -793,9 +764,7 @@ async def get_answer_grids(*, c: Challenge, config: RunConfig) -> tuple[Guess, G
                         scores=[s.score for s in new_instruction_scores],
                     )
                     if new_instruction_scores:
-                        top_revised_score = max(
-                            [s.score for s in new_instruction_scores]
-                        )
+                        top_revised_score = max(s.score for s in new_instruction_scores)
                         if instruction_scores:
                             log.info(
                                 "Revision improvement",
@@ -977,7 +946,7 @@ async def solve_challenge(
                 total=total,
             )
         max_score = max(final_scores)
-        log.info("Challenge completed", task_id=task_id_to_use, final_score=max_score)
+        log.info("Challenge completed", final_score=max_score)
         return max_score
     else:
         return -1
@@ -993,18 +962,11 @@ async def solve_challenges(
     # Create semaphore to limit concurrent tasks
     semaphore = MonitoredSemaphore(config.max_concurrent_tasks, name="run_semaphore")
 
-    progress: RunProgress | None = None
-    progress_token = None
-    if challenges:
-        progress = RunProgress(total_tasks=len(challenges))
-        progress_token = attach_run_progress(progress)
-        progress.render_now()
-
-    async def solve_with_semaphore(
+    async def run_one_challenge(
         *,
         challenge: Challenge,
         solution_grids: list[GRID] | None,
-    ) -> float:
+    ) -> float | None:
         async with semaphore:
             try:
                 return await solve_challenge(
@@ -1014,31 +976,36 @@ async def solve_challenges(
                     attempts_path=attempts_path,
                     temp_attempts_dir=temp_attempts_dir,
                 )
-            finally:
-                notify_task_finished()
-
-    futures: list[CoroutineType[T.Any, T.Any, float]] = []
-    if solution_grids_list is None:
-        solution_grids_list = [[] * len(challenges)]
-    scores: list[float | BaseException] = []
-    try:
-        for challenge, solution_grids in zip(
-            challenges, solution_grids_list, strict=True
-        ):
-            futures.append(
-                solve_with_semaphore(
-                    challenge=challenge, solution_grids=solution_grids
+            except Exception as e:
+                error_kwargs: dict[str, T.Any] = {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "task_id": challenge.task_id,
+                }
+                if str(e) != "no scores...":
+                    error_kwargs["traceback"] = "".join(
+                        traceback.format_exception(type(e), e, e.__traceback__)
+                    )
+                log.error(
+                    f"Exception in solve_challenges: {type(e).__name__}",
+                    **error_kwargs,
                 )
-            )
-        scores = await asyncio.gather(*futures, return_exceptions=True)
-    finally:
-        if progress is not None:
-            progress.finish_line()
-        if progress_token is not None:
-            detach_run_progress(progress_token)
-    scores = filter_out_exceptions(
-        lst=scores, description="Exception in solve_challenges"
+                return None
+
+    if solution_grids_list is None:
+        solution_grids_list = [[] for _ in challenges]
+    coros = [
+        run_one_challenge(challenge=ch, solution_grids=sg)
+        for ch, sg in zip(challenges, solution_grids_list, strict=True)
+    ]
+    raw_scores = await tqdm_async.gather(
+        *coros,
+        total=len(coros),
+        desc="Challenges",
+        unit="task",
+        dynamic_ncols=True,
     )
+    scores = [s for s in raw_scores if s is not None]
     if scores:
         final_score = sum(scores) / len(scores)
         log.info(
@@ -1068,6 +1035,7 @@ async def run_from_json(
     global SOLUTIONS_D
 
     project_root = Path(__file__).resolve().parents[1]
+    results_dir = project_root / "results"
     resuming = resume_dir is not None
     if resuming:
         results_run_dir = resume_dir.resolve()
@@ -1076,9 +1044,7 @@ async def run_from_json(
                 f"Resume directory does not exist: {results_run_dir}"
             )
     elif results_run_dir is None:
-        results_run_dir = (
-            project_root / "results" / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        )
+        results_run_dir = results_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         results_run_dir.mkdir(parents=True, exist_ok=True)
     else:
         results_run_dir = results_run_dir.resolve()
@@ -1144,35 +1110,34 @@ async def run_from_json(
 
     solutions_list = [root_solutions[c.task_id] for c in challenges_list]
 
-    with log.span("run_challenges", run_id=run_id):
+    log.info(
+        "Starting run",
+        config=config.model_dump(),
+        challenges_path=str(challenges_path),
+        num_challenges=len(root_challenges),
+        results_run_dir=str(results_run_dir),
+        resuming=resuming,
+        challenges_to_run=len(challenges_list),
+    )
+
+    temp_attempts_dir.mkdir(exist_ok=True, parents=True)
+
+    if not challenges_list:
         log.info(
-            "Starting run",
-            config=config.model_dump(),
-            challenges_path=str(challenges_path),
-            num_challenges=len(root_challenges),
-            results_run_dir=str(results_run_dir),
+            "No challenges to run",
             resuming=resuming,
-            challenges_to_run=len(challenges_list),
+            results_run_dir=str(results_run_dir),
         )
-
-        temp_attempts_dir.mkdir(exist_ok=True, parents=True)
-
-        if not challenges_list:
-            log.info(
-                "No challenges to run",
-                resuming=resuming,
-                results_run_dir=str(results_run_dir),
-            )
-            print("Nothing to run; no challenges queued.")
-        else:
-            final_scores = await solve_challenges(
-                challenges=challenges_list,
-                attempts_path=attempts_path,
-                solution_grids_list=solutions_list,
-                config=config,
-                temp_attempts_dir=temp_attempts_dir,
-            )
-            log.info("Run completed", final_scores=final_scores)
+        print("Nothing to run; no challenges queued.")
+    else:
+        final_scores = await solve_challenges(
+            challenges=challenges_list,
+            attempts_path=attempts_path,
+            solution_grids_list=solutions_list,
+            config=config,
+            temp_attempts_dir=temp_attempts_dir,
+        )
+        log.info("Run completed", final_scores=final_scores)
 
     return attempts_path
 
@@ -1204,7 +1169,7 @@ async def run() -> None:
         "--model",
         "-m",
         type=str,
-        help="Model enum key or value (e.g., groq_kimi_k2, moonshotai/kimi-k2-instruct-0905)",
+        help="LLM handle provider/model_id, e.g. openai/gpt-5.2 or openrouter/qwen/qwen3.5",
     )
     parser.add_argument(
         "--resume",
@@ -1220,13 +1185,10 @@ async def run() -> None:
     run_config = gpt52_config_prod
     if args.model:
         try:
-            selected_model = parse_model(args.model)
-        except ValueError:
-            available_models = ", ".join(model.name for model in Model)
-            raise ValueError(
-                f"Unknown model '{args.model}'. Available model keys: {available_models}"
-            )
-        run_config = with_model(run_config, selected_model)
+            parse_llm(args.model)
+        except ValueError as e:
+            raise ValueError(str(e)) from e
+        run_config = with_llm(run_config, args.model)
 
     attempts_aggregate = await run_from_json(
         challenges_path=challenges_path,

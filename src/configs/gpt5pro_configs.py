@@ -1,29 +1,30 @@
-from src.configs.models import Model, RunConfig, Step, StepRevision, StepRevisionPool
+from src.configs.models import RunConfig, Step, StepRevision, StepRevisionPool
 
+llm = "openai/gpt-5-pro"
 gpt5pro_config_prod = RunConfig(
-    final_follow_model=Model.gpt_5_pro,
+    final_follow_llm=llm,
     final_follow_times=3,
     max_concurrent_tasks=120,
     steps=[
         Step(
-            instruction_model=Model.gpt_5_pro,
-            follow_model=Model.gpt_5_pro,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gpt_5_pro,
-            follow_model=Model.gpt_5_pro,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gpt_5_pro,
-            follow_model=Model.gpt_5_pro,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=3,
             timeout_secs=10_800,
             include_base64=False,
@@ -31,8 +32,8 @@ gpt5pro_config_prod = RunConfig(
         ),
         # StepRevision(
         #     top_scores_used=5,
-        #     instruction_model=Model.gpt_5_pro,
-        #     follow_model=Model.gpt_5_pro,
+        #     instruction_llm=llm,
+        #     follow_llm=llm,
         #     times_per_top_score=1,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -40,8 +41,8 @@ gpt5pro_config_prod = RunConfig(
         # ),
         StepRevisionPool(
             top_scores_used=3,
-            instruction_model=Model.gpt_5_pro,
-            follow_model=Model.gpt_5_pro,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=2,
             timeout_secs=10_800,
             include_base64=False,
@@ -51,29 +52,29 @@ gpt5pro_config_prod = RunConfig(
 )
 
 grok_config_old = RunConfig(
-    final_follow_model=Model.gpt_5_pro,
+    final_follow_llm=llm,
     final_follow_times=5,
     max_concurrent_tasks=10,
     steps=[
         Step(
-            instruction_model=Model.gpt_5_pro,
-            follow_model=Model.gpt_5_pro,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=20,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         Step(
-            instruction_model=Model.gpt_5_pro,
-            follow_model=Model.gpt_5_pro,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=20,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
         # Step(
-        #     instruction_model=Model.gpt_5_pro,
-        #     follow_model=Model.gpt_5_pro,
+        #     instruction_llm=llm,
+        #     follow_llm=llm,
         #     times=20,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -81,8 +82,8 @@ grok_config_old = RunConfig(
         # ),
         StepRevision(
             top_scores_used=5,
-            instruction_model=Model.gpt_5_pro,
-            follow_model=Model.gpt_5_pro,
+            instruction_llm=llm,
+            follow_llm=llm,
             times_per_top_score=2,
             timeout_secs=10_800,
             include_base64=False,
@@ -90,8 +91,8 @@ grok_config_old = RunConfig(
         ),
         StepRevisionPool(
             top_scores_used=5,
-            instruction_model=Model.gpt_5_pro,
-            follow_model=Model.gpt_5_pro,
+            instruction_llm=llm,
+            follow_llm=llm,
             times=10,
             timeout_secs=10_800,
             include_base64=False,
@@ -99,8 +100,8 @@ grok_config_old = RunConfig(
         ),
         # StepRevision(
         #     top_scores_used=5,
-        #     instruction_model=Model.gpt_5_pro,
-        #     follow_model=Model.gpt_5_pro,
+        #     instruction_llm=llm,
+        #     follow_llm=llm,
         #     times_per_top_score=2,
         #     timeout_secs=10_800,
         #     include_base64=False,
@@ -108,8 +109,8 @@ grok_config_old = RunConfig(
         # ),
         # StepRevisionPool(
         #     top_scores_used=5,
-        #     instruction_model=Model.gpt_5_pro,
-        #     follow_model=Model.gpt_5_pro,
+        #     instruction_llm=llm,
+        #     follow_llm=llm,
         #     times=5,
         #     timeout_secs=10_800,
         #     include_base64=False,

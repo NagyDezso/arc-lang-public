@@ -4,14 +4,15 @@ import io
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
 from matplotlib.patches import Rectangle
 
-from src.models import COLOR_MAP, GRID  # GRID is defined as: list[list[int]]
+from src.models import COLOR_MAP, GRID
 
 
 def viz_grid(
-    grid: list[list[int]], color_map: dict[int, str], ax: plt.Axes = None
-) -> plt.Axes:
+    grid: list[list[int]], color_map: dict[int, str], ax: Axes | None = None
+) -> Axes:
     """
     Visualizes a grid of integer cells as colored squares on a given matplotlib Axes.
 
@@ -183,38 +184,3 @@ def base64_from_grid(grid: GRID) -> str:
     plt.close(fig)
 
     return image_base64
-
-
-# Example usage:
-if __name__ == "__main__":
-    # Define a sample color map.
-    from src.models import (
-        COLOR_MAP,  # e.g., COLOR_MAP = {0: 'white', 1: 'blue', 2: 'red'}
-    )
-
-    # Define some sample grids.
-    G1 = [[1, 2, 1], [2, 0, 2], [1, 2, 1]]
-    G2 = [[2, 2, 2], [0, 1, 0], [1, 0, 1]]
-    G3 = [[0, 1, 0], [1, 2, 1], [0, 1, 0]]
-    G4 = [[1, 0, 1], [0, 2, 0], [1, 0, 1]]
-    G5 = [[2, 1, 2], [1, 0, 1], [2, 1, 2]]
-
-    # Organize the grids into rows.
-    _grids = [[G1, G2], [G3, G4], [G5]]
-
-    # Define a list of row border colors (one per row) as hex strings.
-    row_border_colors = ["#FF5733", "#33FF57", "#3357FF"]
-
-    viz_many(_grids, row_border_colors, COLOR_MAP)
-
-    # Test base64_from_grid
-    print("\nTesting base64_from_grid:")
-    base64_str = base64_from_grid(G1)
-    print(f"Base64 string length: {len(base64_str)}")
-    print(f"First 100 characters: {base64_str[:100]}...")
-
-    # Save the base64 image to a file for verification
-    output_path = "test_grid_image.png"
-    with open(output_path, "wb") as f:
-        f.write(base64.b64decode(base64_str))
-    print(f"Test image saved to: {output_path}")

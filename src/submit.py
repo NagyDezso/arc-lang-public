@@ -57,7 +57,7 @@ def _project_root_from_results_dir(results_dir: Path) -> Path:
 
 def _default_truth_path(results_dir: Path) -> Path:
     root = _project_root_from_results_dir(results_dir)
-    return root / "data" / "arc-prize-2025" / "arc-agi_evaluation_solutions.json"
+    return root / "data" / "arc-prize-2024" / "arc-agi_evaluation_solutions.json"
 
 
 def resolve_aggregate_attempts(results_dir: Path, attempts: Path | None) -> Path:

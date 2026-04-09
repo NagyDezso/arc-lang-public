@@ -2,16 +2,6 @@ from pydantic import BaseModel, Field
 
 # Import logging_config first to apply patches
 import src.logging_config  # noqa: F401
-from src.llms.messages import (
-    get_next_message_anthropic,
-    get_next_message_copilot,
-    get_next_message_deepseek,
-    get_next_message_gemini,
-    get_next_message_lmstudio,
-    get_next_message_openai,
-    get_next_message_openrouter,
-)
-from src.llms.models import Model
 from src.llms.structured import get_next_structure
 from src.log import log
 from src.models import GRID, Challenge, Example, TestExample
@@ -95,41 +85,6 @@ Your task: Apply the given instructions precisely to transform the test input gr
 
 The training examples demonstrate how the instructions work - use them to understand the pattern, then follow the exact same process for the test input.
 """.strip()
-
-func_to_llm = {
-    get_next_message_openai: {
-        Model.gpt_4_5,
-        Model.o3_mini,
-        Model.gpt_4_o,
-        Model.o3_mini_high,
-        Model.o4_mini_high,
-        Model.o4_mini,
-        Model.gpt_5,
-        Model.gpt_52,
-        Model.gpt_5_pro,
-    },
-    get_next_message_anthropic: {Model.sonnet_3_7, Model.sonnet_3_5, Model.sonnet_4_5},
-    get_next_message_gemini: {Model.gemini_2_5},
-    get_next_message_deepseek: {Model.deepseek_chat, Model.deepseek_reasoner},
-    get_next_message_openrouter: {
-        Model.openrouter_sonnet_3_7_thinking,
-        Model.openrouter_gemini_2_5_free,
-        Model.openrouter_deepseek_3_free,
-        Model.openrouter_gemini_2_5,
-        Model.openrouter_deepseek_r1,
-        Model.openrouter_grok_v3,
-        Model.openrouter_quasar_alpha,
-        Model.openrouter_sonnet_3_7,
-        Model.openrouter_optimus_alpha,
-        Model.openrouter_deepseek_r1_free,
-    },
-}
-
-# now reverse the map
-llm_to_func = {}
-for f, _llms in func_to_llm.items():
-    for _llm in _llms:
-        llm_to_func[_llm] = f
 
 
 class PromptResponse(BaseModel):
@@ -261,7 +216,7 @@ async def output_grid_from_instructions(
     instructions: str,
     training_examples: list[Example],
     test_input_grid: GRID,
-    model: Model,
+    llm: str,
     include_base64: bool,
     use_diffs: bool,
     is_perfect: bool,
@@ -301,5 +256,5 @@ async def output_grid_from_instructions(
         }
     ]
     return (
-        await get_next_structure(structure=GridResponse, messages=messages, model=model)
+        await get_next_structure(structure=GridResponse, messages=messages, llm=llm)
     ).grid
