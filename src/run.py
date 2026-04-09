@@ -30,6 +30,12 @@ from src.main import (
     output_grid_from_instructions,
 )
 from src.models import Challenge, TestExample
+from src.run_progress import (
+    RunProgress,
+    attach_run_progress,
+    detach_run_progress,
+    notify_task_finished,
+)
 from src.submit import ChallengeSolution, evaluate_solutions
 from src.utils import random_str
 
@@ -724,11 +730,6 @@ async def return_answer(
         grids=[g[0] for g in second_prediction],
     )
 
-    # Console output for final grids generation
-    print(f"Final grids generated for challenge: {c.task_id}")
-    print(f"  First guess grids: {len(first_prediction)}")
-    print(f"  Second guess grids: {len(second_prediction)}")
-
     return first_prediction_guess, second_prediction_guess
 
 
@@ -917,7 +918,6 @@ async def solve_challenge(
         # totally hide task id so there is no proprietary info being sent
         task_id_to_use = random_str(6)
     set_task_id(task_id_to_use)
-    print(f"Starting to solve challenge: {c.task_id}")  # Console output for task start
     log.info("Starting challenge")
 
     with log.span("solve_challenge"):
@@ -978,7 +978,6 @@ async def solve_challenge(
             )
         max_score = max(final_scores)
         log.info("Challenge completed", task_id=task_id_to_use, final_score=max_score)
-        print(f"Task {c.task_id} completed!")
         return max_score
     else:
         return -1
@@ -994,28 +993,49 @@ async def solve_challenges(
     # Create semaphore to limit concurrent tasks
     semaphore = MonitoredSemaphore(config.max_concurrent_tasks, name="run_semaphore")
 
+    progress: RunProgress | None = None
+    progress_token = None
+    if challenges:
+        progress = RunProgress(total_tasks=len(challenges))
+        progress_token = attach_run_progress(progress)
+        progress.render_now()
+
     async def solve_with_semaphore(
         *,
         challenge: Challenge,
         solution_grids: list[GRID] | None,
     ) -> float:
         async with semaphore:
-            return await solve_challenge(
-                c=challenge,
-                solution_grids=solution_grids,
-                config=config,
-                attempts_path=attempts_path,
-                temp_attempts_dir=temp_attempts_dir,
-            )
+            try:
+                return await solve_challenge(
+                    c=challenge,
+                    solution_grids=solution_grids,
+                    config=config,
+                    attempts_path=attempts_path,
+                    temp_attempts_dir=temp_attempts_dir,
+                )
+            finally:
+                notify_task_finished()
 
     futures: list[CoroutineType[T.Any, T.Any, float]] = []
     if solution_grids_list is None:
         solution_grids_list = [[] * len(challenges)]
-    for challenge, solution_grids in zip(challenges, solution_grids_list, strict=True):
-        futures.append(
-            solve_with_semaphore(challenge=challenge, solution_grids=solution_grids)
-        )
-    scores = await asyncio.gather(*futures, return_exceptions=True)
+    scores: list[float | BaseException] = []
+    try:
+        for challenge, solution_grids in zip(
+            challenges, solution_grids_list, strict=True
+        ):
+            futures.append(
+                solve_with_semaphore(
+                    challenge=challenge, solution_grids=solution_grids
+                )
+            )
+        scores = await asyncio.gather(*futures, return_exceptions=True)
+    finally:
+        if progress is not None:
+            progress.finish_line()
+        if progress_token is not None:
+            detach_run_progress(progress_token)
     scores = filter_out_exceptions(
         lst=scores, description="Exception in solve_challenges"
     )
@@ -1212,7 +1232,7 @@ async def run() -> None:
         challenges_path=challenges_path,
         truth_solutions_path=solutions_path,
         config=run_config,
-        limit=2,
+        limit=None,
         offset=0,
         # task_ids={},
         resume_dir=args.resume,

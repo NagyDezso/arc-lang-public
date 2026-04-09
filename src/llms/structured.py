@@ -36,6 +36,7 @@ from src.llms.openai_responses import (
     extract_structured_output,
 )
 from src.log import log
+from src.run_progress import record_llm_usage
 from src.utils import random_str
 
 BMType = T.TypeVar("BMType", bound=BaseModel)
@@ -371,6 +372,7 @@ async def _get_next_structure_openai(
         response_status=raw_response.status,
         reasoning=raw_response.reasoning,
     )
+    record_llm_usage(openai_usage.input_tokens, openai_usage.output_tokens)
 
     if model in [Model.o3_pro]:
         debug(raw_response.model_dump())
@@ -471,6 +473,11 @@ async def _get_next_structure_anthropic(
     tool_call = next(block for block in response.content if block.type == "tool_use")
     tool_input = tool_call.input
     output: BMType = structure.model_validate(tool_input)
+    if response.usage is not None:
+        record_llm_usage(
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+        )
     return output
 
 
@@ -699,6 +706,10 @@ async def _get_next_structure_xai(
             if os.getenv("LOG_GRIDS", "0") == "1"
             else None,
         )
+        record_llm_usage(
+            grok_usage.prompt_text_tokens,
+            grok_usage.completion_tokens,
+        )
 
     except Exception as e:
         print(f"usage error: {e=}")
@@ -771,6 +782,12 @@ async def _get_next_structure_deepseek(
     if not content:
         raise Exception("Empty response from DeepSeek model")
 
+    if response.usage is not None:
+        record_llm_usage(
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+        )
+
     try:
         json_data = json.loads(content)
         output: BMType = structure.model_validate(json_data)
@@ -811,6 +828,8 @@ async def _get_next_structure_copilot(
         response = await copilot_client.chat.completions.create(
             model=model.value, messages=messages, response_format=response_format
         )
+        _cu = _openai_usage_from_completion_usage(response.usage)
+        record_llm_usage(_cu.input_tokens, _cu.output_tokens)
 
         if not response.choices:
             raise Exception(f"Copilot returned no choices: {response}")
@@ -982,6 +1001,9 @@ async def _get_next_structure_openrouter(
         # reasoning_effort="high",
     )
 
+    _ou = _openai_usage_from_completion_usage(response.usage)
+    record_llm_usage(_ou.input_tokens, _ou.output_tokens)
+
     # Parse the JSON response
     if not response.choices:
         raise Exception(f"OpenRouter returned no choices: {response}")
@@ -1070,6 +1092,7 @@ async def _get_next_structure_lmstudio(
     )
 
     openai_usage = _openai_usage_from_completion_usage(response.usage)
+    record_llm_usage(openai_usage.input_tokens, openai_usage.output_tokens)
     if openai_usage is not None and response.choices:
         ch0 = response.choices[0]
         log.info(
@@ -1226,6 +1249,8 @@ async def _get_next_structure_kilo(
         response_format=response_format,
         max_tokens=100_000,
     )
+    _ku = _openai_usage_from_completion_usage(response.usage)
+    record_llm_usage(_ku.input_tokens, _ku.output_tokens)
 
     if not response.choices:
         raise Exception(f"Kilo returned no choices: {response}")
@@ -1290,6 +1315,10 @@ async def _get_next_structure_gemini(
             model=model.value,
             usage=gemini_usage.model_dump(),
             cents=gemini_usage.cents(model=model),
+        )
+        record_llm_usage(
+            gemini_usage.prompt_tokens,
+            gemini_usage.completion_tokens + gemini_usage.thinking_tokens,
         )
 
     # The response.parsed should contain the instantiated object
@@ -1417,6 +1446,7 @@ async def _get_next_structure_pydantic_gateway(
             usage=gemini_usage.model_dump(),
             cents=gemini_usage.cents(model=model),
         )
+        record_llm_usage(gemini_usage.prompt_tokens, gemini_usage.completion_tokens)
 
     return result.output
 
