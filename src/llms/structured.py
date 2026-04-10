@@ -10,27 +10,34 @@ import re
 import time
 import typing as T
 
-import httpx
-from anthropic import AsyncAnthropic
-from google.genai import Client as GoogleGenAI
 from google.genai.types import (
     GenerateContentConfig,
     ThinkingConfig,
     ThinkingConfigDict,
     ThinkingLevel,
 )
-from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.chat.completion_create_params import ResponseFormat
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
-from pydantic_ai.providers.gateway import gateway_provider
-from xai_sdk import AsyncClient as XaiAsyncClient
 from xai_sdk.chat import assistant, image, system, user
 
 from src.async_utils.semaphore_monitor import MonitoredSemaphore
+from src.llms.clients import (
+    anthropic_client,
+    copilot_client,
+    deepseek_client,
+    gateway_client,
+    gemini_client,
+    groq_client,
+    kilo_client,
+    lmstudio_client,
+    openai_client,
+    openrouter_client,
+    xai_client,
+)
 from src.llms.models import (
     TokenUsage,
     parse_llm,
@@ -48,8 +55,6 @@ BMType = T.TypeVar("BMType", bound=BaseModel)
 
 P = T.ParamSpec("P")
 R = T.TypeVar("R")
-COPILOT_BASE_URL = "http://localhost:4141/v1"
-LMSTUDIO_BASE_URL = "http://127.0.0.1:4444/v1"
 
 
 def retry_with_backoff(
@@ -161,54 +166,6 @@ def retry_with_backoff(
 
     return decorator
 
-
-openai_client = AsyncOpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY", "openai"), timeout=10_800, max_retries=2
-)
-anthropic_client = AsyncAnthropic(
-    api_key=os.environ.get("ANTHROPIC_API_KEY", "anthropic"),
-    timeout=3_010,
-    max_retries=2,
-)
-deepseek_client = AsyncOpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY", "deepseek"),
-    base_url="https://api.deepseek.com",
-    timeout=2500,
-    max_retries=2,
-)
-openrouter_client = AsyncOpenAI(
-    api_key=os.environ.get("OPENROUTER_API_KEY", "openrouter"),
-    base_url="https://openrouter.ai/api/v1",
-    timeout=2500,
-    max_retries=2,
-)
-groq_client = AsyncOpenAI(
-    api_key=os.environ["GROQ_API_KEY"],
-    base_url="https://api.groq.com/openai/v1",
-    timeout=2500,
-    max_retries=2,
-)
-gemini_client = GoogleGenAI(
-    api_key=os.environ.get("GEMINI_API_KEY", "gemini"),
-)
-kilo_client = AsyncOpenAI(
-    api_key=os.environ.get("KILO_API_KEY", "kilo"),
-    base_url="https://api.kilo.ai/api/gateway",
-    timeout=2500,
-    max_retries=2,
-)
-lmstudio_client = AsyncOpenAI(
-    api_key=os.environ.get("LMSTUDIO_API_KEY", "lm-studio"),
-    base_url=LMSTUDIO_BASE_URL,
-    timeout=10_800,
-    max_retries=2,
-)
-copilot_client = AsyncOpenAI(
-    api_key=os.environ.get("COPILOT_API_KEY") or "copilot",
-    base_url=COPILOT_BASE_URL,
-    timeout=2500,
-    max_retries=2,
-)
 
 API_SEMAPHORE = MonitoredSemaphore(
     int(os.environ["MAX_CONCURRENCY"]), name="API_SEMAPHORE"
@@ -350,14 +307,6 @@ async def _get_next_structure_xai(
 ) -> tuple[BMType, TokenUsage]:
     messages = update_messages_xai(messages=messages)
 
-    api_keys = os.environ["XAI_API_KEY"].split(",")
-    xai_client = XaiAsyncClient(
-        api_key=random.choice(api_keys),
-        timeout=3_010,
-        channel_options=[
-            # ("grpc.service_config", custom_retry_policy),
-        ],
-    )
     chat = xai_client.chat.create(
         model=model_id,
         messages=messages,
@@ -857,26 +806,8 @@ async def _get_next_structure_pydantic_gateway(
         google_thinking_config=ThinkingConfigDict(thinking_level=ThinkingLevel.HIGH),
     )
 
-    # Create gateway provider with explicit API key
-    # Support both env var names
-    gateway_api_key = os.environ.get("PYDANTIC_AI_GATEWAY_API_KEY") or os.environ.get(
-        "PYDANTIC_API_GATEWAY_API_KEY"
-    )
-    if not gateway_api_key:
-        raise ValueError(
-            "Set PYDANTIC_AI_GATEWAY_API_KEY or PYDANTIC_API_GATEWAY_API_KEY environment variable"
-        )
-
-    # Create custom HTTP client with long timeout for reasoning models (3 hours like GPT-5-Pro)
-    http_client = httpx.AsyncClient(timeout=httpx.Timeout(10_800.0))
-
-    # gateway_provider takes upstream provider as string (e.g., "google-vertex")
-    gateway = gateway_provider(
-        "google-vertex", api_key=gateway_api_key, http_client=http_client
-    )
-
     model_name = model_id.split(":")[-1]
-    google_model = GoogleModel(model_name, provider=gateway)
+    google_model = GoogleModel(model_name, provider=gateway_client)
 
     # Create agent with structured output type
     agent: Agent[None, BMType] = Agent(

@@ -4,7 +4,7 @@ llm = "openai/gpt-5.2"
 gpt52_config_prod = RunConfig(
     final_follow_llm=llm,
     final_follow_times=3,
-    max_concurrent_tasks=5,
+    max_concurrent_tasks=2,
     steps=[
         Step(
             instruction_llm=llm,

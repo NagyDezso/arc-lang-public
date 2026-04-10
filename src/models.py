@@ -142,12 +142,6 @@ Input:
         return "\n".join(" ".join(str(x) for x in row) for row in grid)
 
     @staticmethod
-    async def grid_from_str_using_llm(s: str) -> GRID:
-        from src.llms.messages import extract_grid_from_text
-
-        return await extract_grid_from_text(llm="openai/o4-mini", text=s)
-
-    @staticmethod
     def grid_to_base64(grid: GRID) -> str:
         from src.viz import base64_from_grid
 
