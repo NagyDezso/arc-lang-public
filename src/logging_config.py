@@ -5,12 +5,15 @@ import os
 import time
 import uuid
 from contextvars import ContextVar
+from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 import logfire
 from dotenv import load_dotenv
+
+from src.llms.models import TokenUsage
 
 # Load environment variables
 load_dotenv()
@@ -102,19 +105,57 @@ def _log_to_local_file(level: str, message: str, **kwargs: Any) -> None:
         local_logger.info(final_message)
 
 
-# Context variables for tracking IDs
-current_task_id: ContextVar[str | None] = ContextVar("current_task_id", default=None)
+@dataclass
+class TaskLogContext:
+    task_id: str
+    cumulative: TokenUsage
+    max_single_call_total_tokens: int = 0
+
+
+# Per challenge asyncio task: task_id + in-place TokenUsage rollup + peak single-call total
+current_task_log: ContextVar[TaskLogContext | None] = ContextVar(
+    "current_task_log", default=None
+)
 current_run_id: ContextVar[str | None] = ContextVar("current_run_id", default=None)
 
 
 def set_task_id(task_id: str) -> None:
-    """Set the current task ID for logging context."""
-    current_task_id.set(task_id)
+    """Set task id and fresh token rollup state for this challenge."""
+    current_task_log.set(TaskLogContext(task_id=task_id, cumulative=TokenUsage()))
 
 
 def get_task_id() -> str | None:
     """Get the current task ID from context."""
-    return current_task_id.get()
+    ctx = current_task_log.get()
+    return ctx.task_id if ctx else None
+
+
+def record_llm_token_usage(usage: TokenUsage) -> None:
+    ctx = current_task_log.get()
+    if ctx is None:
+        return
+    ctx.cumulative += usage
+    ct = usage.total_tokens
+    if ct > ctx.max_single_call_total_tokens:
+        ctx.max_single_call_total_tokens = ct
+
+
+def get_challenge_token_totals() -> tuple[TokenUsage, int]:
+    ctx = current_task_log.get()
+    if ctx is None:
+        return TokenUsage(), 0
+    return ctx.cumulative, ctx.max_single_call_total_tokens
+
+
+def merge_run_token_usage(
+    calls: list[tuple[TokenUsage, int]],
+) -> tuple[TokenUsage, int]:
+    total_usage = TokenUsage()
+    max_tokens = 0
+    for usage, max_tokens_in_call in calls:
+        total_usage += usage
+        max_tokens = max(max_tokens, max_tokens_in_call)
+    return total_usage, max_tokens
 
 
 def set_run_id(run_id: str) -> None:

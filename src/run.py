@@ -14,12 +14,18 @@ from tqdm.asyncio import tqdm as tqdm_async
 
 from src.async_utils.semaphore_monitor import MonitoredSemaphore
 from src.configs.models import RunConfig, Step, StepRevision, StepRevisionPool
-from src.llms.models import parse_llm
+from src.llms.models import TokenUsage, parse_llm
 from src.llms.structured import get_next_structure
 from src.log import log
 
 # Import logging_config first to apply patches before any logfire usage
-from src.logging_config import configure_local_log_path, generate_run_id, set_task_id
+from src.logging_config import (
+    configure_local_log_path,
+    generate_run_id,
+    get_challenge_token_totals,
+    merge_run_token_usage,
+    set_task_id,
+)
 from src.main import (
     GRID,
     INTUITIVE_PROMPT,
@@ -880,7 +886,7 @@ async def solve_challenge(
     temp_attempts_dir: Path,
     solution_grids: list[GRID] | None,
     config: RunConfig,
-) -> float:
+) -> tuple[float, tuple[TokenUsage, int]]:
     if os.getenv("USE_TASK_ID", "0") == "1":
         task_id_to_use = c.task_id
     else:
@@ -947,9 +953,8 @@ async def solve_challenge(
             )
         max_score = max(final_scores)
         log.info("Challenge completed", final_score=max_score)
-        return max_score
-    else:
-        return -1
+        return max_score, get_challenge_token_totals()
+    return -1, get_challenge_token_totals()
 
 
 async def solve_challenges(
@@ -966,7 +971,7 @@ async def solve_challenges(
         *,
         challenge: Challenge,
         solution_grids: list[GRID] | None,
-    ) -> float | None:
+    ) -> tuple[float | None, tuple[TokenUsage, int]]:
         async with semaphore:
             try:
                 return await solve_challenge(
@@ -990,7 +995,15 @@ async def solve_challenges(
                     f"Exception in solve_challenges: {type(e).__name__}",
                     **error_kwargs,
                 )
-                return None
+                return None, get_challenge_token_totals()
+            finally:
+                usage, max_single = get_challenge_token_totals()
+                log.info(
+                    "Challenge token usage",
+                    task_id=challenge.task_id,
+                    token_usage_total=usage.model_dump(),
+                    max_single_call_total_tokens=max_single,
+                )
 
     if solution_grids_list is None:
         solution_grids_list = [[] for _ in challenges]
@@ -998,14 +1011,22 @@ async def solve_challenges(
         run_one_challenge(challenge=ch, solution_grids=sg)
         for ch, sg in zip(challenges, solution_grids_list, strict=True)
     ]
-    raw_scores = await tqdm_async.gather(
+    raw_results: list[tuple[float | None, tuple[TokenUsage, int]]] = []
+    raw_results = await tqdm_async.gather(
         *coros,
         total=len(coros),
         desc="Challenges",
         unit="task",
         dynamic_ncols=True,
     )
-    scores = [s for s in raw_scores if s is not None]
+    run_usage, run_max_single = merge_run_token_usage([t for _, t in raw_results])
+    log.info(
+        "Run token usage",
+        challenge_count=len(raw_results),
+        token_usage_total=run_usage.model_dump(),
+        run_max_single_call_total_tokens=run_max_single,
+    )
+    scores = [s for s, _ in raw_results if s is not None]
     if scores:
         final_score = sum(scores) / len(scores)
         log.info(

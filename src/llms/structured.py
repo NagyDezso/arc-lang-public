@@ -40,6 +40,7 @@ from src.llms.openai_responses import (
     extract_structured_output,
 )
 from src.log import log
+from src.logging_config import record_llm_token_usage
 from src.utils import random_str
 
 BMType = T.TypeVar("BMType", bound=BaseModel)
@@ -950,4 +951,5 @@ async def get_next_structure(
                 raw_response = result.model_dump()
                 span.set_attribute("response", raw_response)
 
+        record_llm_token_usage(token_usage)
         return result

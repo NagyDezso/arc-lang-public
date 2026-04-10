@@ -210,6 +210,14 @@ class TokenUsage(BaseModel):
             total_tokens=usage.total_tokens,
         )
 
+    def __iadd__(self, other: TokenUsage) -> TokenUsage:
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.reasoning_tokens += other.reasoning_tokens
+        self.cached_tokens += other.cached_tokens
+        self.total_tokens += other.total_tokens
+        return self
+
     def cost(self, llm: str) -> float:
         pricing = MODEL_PRICING_D.get(llm)
         if pricing is None:
