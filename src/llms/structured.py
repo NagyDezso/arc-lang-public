@@ -854,33 +854,27 @@ async def get_next_structure(
     messages: list,
 ) -> BMType:
     provider, model_id = parse_llm(llm)
-    res_id = random_str(k=6)
     async with API_SEMAPHORE:
-        with log.span(
-            "API call started",
-            llm=llm,
-            structure=structure.__name__,
-            message_length=len(json.dumps(messages)),
-            request_id=res_id,
-        ) as span:
-            start = time.time()
-            try:
-                result, token_usage = await _run_provider_structure_function(
-                    provider,
-                    structure,
-                    model_id,
-                    messages,
-                )
-            except KeyError as e:
-                raise KeyError(f"Provider {provider} not found") from e
-            raw_response = {}
-            token_usage_dict = token_usage.model_dump()
-            duration = time.time() - start
-            span.set_attribute("duration_seconds", duration)
-            span.set_attribute("token_usage", token_usage_dict)
-            if os.getenv("LOG_LEVEL", "INFO") == "DEBUG":
-                raw_response = result.model_dump()
-                span.set_attribute("response", raw_response)
+        start = time.time()
+        try:
+            result, token_usage = await _run_provider_structure_function(
+                provider,
+                structure,
+                model_id,
+                messages,
+            )
+        except KeyError as e:
+            raise KeyError(f"Provider {provider} not found") from e
+        raw_response = {"response": "hidden"}
+        duration = time.time() - start
+        if os.getenv("LOG_LEVEL", "INFO") == "DEBUG":
+            raw_response = result.model_dump()
+        log.info(
+            "API call completed",
+            duration_seconds=duration,
+            token_usage=token_usage.model_dump(),
+            response=raw_response,
+        )
 
         record_llm_token_usage(token_usage)
         return result

@@ -22,9 +22,11 @@ def evaluate_solutions(
     truth: dict[str, list[GRID]] = json.loads(
         truth_solutions_path.read_text(encoding="utf-8")
     )
-    attempts: dict[str, list[ChallengeSolution]] = TypeAdapter(
-        dict[str, list[ChallengeSolution]]
-    ).validate_json(attempts_solutions_path.read_text(encoding="utf-8"))
+    attempts = {}
+    if attempts_solutions_path.is_file():
+        attempts = TypeAdapter(dict[str, list[ChallengeSolution]]).validate_json(
+            attempts_solutions_path.read_text(encoding="utf-8")
+        )
     total_count = 0
     correct_count = 0
     for challenge_id, attempt_list in attempts.items():
