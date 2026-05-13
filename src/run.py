@@ -649,18 +649,30 @@ async def get_diverse_attempts(
             )
         )
     log.debug("scores to use for final grids", scores=scores_to_use)
-    final_output_grids = await asyncio.gather(*futures, return_exceptions=True)
-    final_output_grids = filter_out_exceptions(
-        final_output_grids, "Exception in get_diverse_attempts (final output grids)"
-    )
-    if not final_output_grids:
+    raw_results = await asyncio.gather(*futures, return_exceptions=True)
+    paired: list[tuple[GRID, InstructionsScore]] = [
+        (grid, score)
+        for grid, score in zip(raw_results, scores_to_use)
+        if not isinstance(grid, BaseException)
+    ]
+    for r in raw_results:
+        if isinstance(r, BaseException):
+            log.error(
+                "Exception in get_diverse_attempts (final output grids)",
+                error_type=type(r).__name__,
+                error_message=str(r),
+                traceback="".join(
+                    traceback.format_exception(type(r), r, r.__traceback__)
+                ),
+            )
+    if not paired:
         log.error(f"No final output grids found for {c.task_id}")
 
-    first_grid = final_output_grids[0]
-    for g in final_output_grids:
-        if g[0] != first_grid[0]:
-            return first_grid, g
-    return first_grid, first_grid
+    first = paired[0]
+    for g in paired:
+        if g[0] != first[0]:
+            return first, g
+    return first, first
 
 
 async def return_answer(

@@ -17,6 +17,8 @@ from src.llms.models import TokenUsage
 
 # Load environment variables
 load_dotenv()
+# Turn off Pydantic error URL inclusion
+os.environ["PYDANTIC_ERRORS_INCLUDE_URL"] = "0"
 
 # If set to "1", do not send logs to Logfire; only write locally
 LOCAL_LOGS_ONLY = os.environ.get("LOCAL_LOGS_ONLY", "0") == "1"
