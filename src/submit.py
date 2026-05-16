@@ -17,7 +17,9 @@ class ChallengeSolution(BaseModel):
 
 
 def evaluate_solutions(
-    attempts_solutions_path: Path, truth_solutions_path: Path
+    attempts_solutions_path: Path,
+    truth_solutions_path: Path,
+    show_task_ids: bool = False,
 ) -> None:
     truth: dict[str, list[GRID]] = json.loads(
         truth_solutions_path.read_text(encoding="utf-8")
@@ -29,8 +31,11 @@ def evaluate_solutions(
         )
     total_count = 0
     correct_count = 0
+    successful_task_ids: list[str] = []
+    failed_task_ids: list[str] = []
     for challenge_id, attempt_list in attempts.items():
         truth_grids: list[GRID] = truth[challenge_id]
+        task_all_correct = True
         for i, truth_grid in enumerate(truth_grids):
             total_count = total_count + 1
             attempt_grids = attempt_list[i]
@@ -38,6 +43,12 @@ def evaluate_solutions(
                 correct_count = correct_count + 1
             elif attempt_grids.attempt_2 == truth_grid:
                 correct_count = correct_count + 1
+            else:
+                task_all_correct = False
+        if task_all_correct:
+            successful_task_ids.append(challenge_id)
+        else:
+            failed_task_ids.append(challenge_id)
 
     incorrect_count = total_count - correct_count
     accuracy = (correct_count / total_count * 100) if total_count else 0.0
@@ -47,6 +58,14 @@ def evaluate_solutions(
     print(f"Correct          : {correct_count}")
     print(f"Incorrect        : {incorrect_count}")
     print(f"Accuracy         : {accuracy:.2f}%")
+    print(f"Successful tasks : {len(successful_task_ids)}")
+    print(f"Failed tasks     : {len(failed_task_ids)}")
+
+    if show_task_ids:
+        print("\n--- Successful task ids ---")
+        print(", ".join(successful_task_ids))
+        print("\n--- Failed task ids ---")
+        print(", ".join(failed_task_ids))
 
 
 def _project_root_from_results_dir(results_dir: Path) -> Path:
@@ -108,6 +127,11 @@ def main() -> None:
         help="Ground-truth solutions JSON (default: data/arc-prize-2025/"
         "arc-agi_evaluation_solutions.json next to repo root inferred from results_dir)",
     )
+    parser.add_argument(
+        "--show-task-ids",
+        action="store_true",
+        help="Also print the lists of successful and failed task ids",
+    )
     args = parser.parse_args()
     results_dir = args.results_dir
     if not results_dir.is_dir():
@@ -126,7 +150,7 @@ def main() -> None:
 
     print(f"Attempts: {attempts_path}")
     print(f"Truth:    {truth_path}")
-    evaluate_solutions(attempts_path, truth_path)
+    evaluate_solutions(attempts_path, truth_path, show_task_ids=args.show_task_ids)
 
 
 if __name__ == "__main__":

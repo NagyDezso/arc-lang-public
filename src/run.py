@@ -36,6 +36,7 @@ from src.main import (
     output_grid_from_instructions,
 )
 from src.models import Challenge, TestExample
+from src.notify import notify_phone
 from src.submit import ChallengeSolution, evaluate_solutions
 from src.utils import random_str
 
@@ -975,7 +976,7 @@ async def solve_challenges(
     config: RunConfig,
     attempts_path: Path,
     temp_attempts_dir: Path,
-) -> float:
+) -> tuple[float, TokenUsage, int]:
     # Create semaphore to limit concurrent tasks
     semaphore = MonitoredSemaphore(config.max_concurrent_tasks, name="run_semaphore")
 
@@ -1047,9 +1048,9 @@ async def solve_challenges(
             total_score=sum(scores),
             challenge_count=len(scores),
         )
-        return final_score
+        return final_score, run_usage, run_max_single
     log.error("No scores for challenges", config=config.model_dump())
-    return 0
+    return 0, run_usage, run_max_single
 
 
 async def run_from_json(
@@ -1155,15 +1156,17 @@ async def run_from_json(
 
     temp_attempts_dir.mkdir(exist_ok=True, parents=True)
 
+    final_scores = 0.0
+    run_usage = TokenUsage()
+    run_max_single = 0
     if not challenges_list:
         log.info(
             "No challenges to run",
             resuming=resuming,
             results_run_dir=str(results_run_dir),
         )
-        print("Nothing to run; no challenges queued.")
     else:
-        final_scores = await solve_challenges(
+        final_scores, run_usage, run_max_single = await solve_challenges(
             challenges=challenges_list,
             attempts_path=attempts_path,
             solution_grids_list=solutions_list,
@@ -1171,6 +1174,29 @@ async def run_from_json(
             temp_attempts_dir=temp_attempts_dir,
         )
         log.info("Run completed", final_scores=final_scores)
+
+    token_summary = (
+        f"Tokens: total={run_usage.total_tokens:,} "
+        f"in={run_usage.input_tokens:,} out={run_usage.output_tokens:,} "
+        f"reasoning={run_usage.reasoning_tokens:,} cached={run_usage.cached_tokens:,}\n"
+        f"Max single call: {run_max_single:,}"
+    )
+    print(f"\n{'=' * 50}")
+    print(f"Run {run_id} finished")
+    print(f"Score: {final_scores * 100:.2f}%")
+    print(f"Challenges: {len(challenges_list)}")
+    print(token_summary)
+    print(f"Results: {results_run_dir}")
+    print(f"{'=' * 50}\n")
+
+    notify_phone(
+        f"Run {run_id} finished\n"
+        f"Score: {final_scores * 100:.2f}%\n"
+        f"Challenges: {len(challenges_list)}\n"
+        f"{token_summary}\n"
+        f"Results: {results_run_dir}",
+        title="ARC run finished",
+    )
 
     return attempts_path
 
@@ -1211,7 +1237,24 @@ async def run() -> None:
         metavar="DIR",
         help="Existing results/<timestamp> folder to resume (reuses attempts/ and arc.log; skips tasks already saved)",
     )
+    parser.add_argument(
+        "--task",
+        "-t",
+        action="append",
+        default=None,
+        metavar="TASK_ID",
+        help="Run only the given task id(s). Repeat the flag or pass a comma-separated list to specify multiple.",
+    )
     args = parser.parse_args()
+
+    task_ids: set[str] | None = None
+    if args.task:
+        task_ids = {
+            tid.strip()
+            for entry in args.task
+            for tid in entry.split(",")
+            if tid.strip()
+        } or None
 
     from src.configs.gpt52_configs import gpt52_config_prod
 
@@ -1229,7 +1272,7 @@ async def run() -> None:
         config=run_config,
         limit=None,
         offset=0,
-        # task_ids={},
+        task_ids=task_ids,
         resume_dir=args.resume,
     )
 
