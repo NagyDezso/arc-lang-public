@@ -17,15 +17,16 @@ gpt52_config_prod = RunConfig(
         Step(
             instruction_llm=llm,
             follow_llm=llm,
-            times=2,
+            times=3,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,
         ),
-        Step(
+        StepRevision(
+            top_scores_used=3,
             instruction_llm=llm,
             follow_llm=llm,
-            times=3,
+            times_per_top_score=2,
             timeout_secs=10_800,
             include_base64=False,
             use_diffs=True,

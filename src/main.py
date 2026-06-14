@@ -32,10 +32,6 @@ class ReviseInstructionsResponse(BaseModel):
 class GridResponse(BaseModel):
     """Using the instructions given, produce the correct output grid from the test input grid."""
 
-    reasoning: str = Field(
-        ...,
-        description="Brief step-by-step analysis before committing to the grid: restate the transformation rule, note the output dimensions, and sketch how the output is produced.",
-    )
     grid: list[list[int]] = Field(
         ...,
         description="The output grid which is the transform instructions applied to the test input grid. ARC grids are at most 30 rows by 30 columns.",

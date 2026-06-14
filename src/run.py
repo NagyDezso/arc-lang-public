@@ -23,6 +23,7 @@ from src.logging_config import (
     configure_local_log_path,
     generate_run_id,
     get_challenge_token_totals,
+    get_challenge_usage_by_llm,
     merge_run_token_usage,
     set_task_id,
 )
@@ -38,6 +39,11 @@ from src.main import (
 from src.models import Challenge, TestExample
 from src.notify import notify_phone
 from src.submit import ChallengeSolution, evaluate_solutions
+from src.usage import (
+    TaskUsage,
+    summarize_run_usage,
+    write_task_usage,
+)
 from src.utils import random_str
 
 TT = T.TypeVar("TT")
@@ -897,6 +903,7 @@ async def solve_challenge(
     c: Challenge,
     attempts_path: Path,
     temp_attempts_dir: Path,
+    run_dir: Path,
     solution_grids: list[GRID] | None,
     config: RunConfig,
 ) -> tuple[float, tuple[TokenUsage, int]]:
@@ -931,6 +938,18 @@ async def solve_challenge(
         json.dumps(
             TypeAdapter(dict[str, list[ChallengeSolution]]).dump_python(SOLUTIONS_D)
         )
+    )
+
+    # Persist this task's token usage so cost survives resumes and submit.py
+    # can read it without re-parsing logs.
+    _usage, _max_single = get_challenge_token_totals()
+    write_task_usage(
+        run_dir,
+        TaskUsage(
+            task_id=c.task_id,
+            usage_by_llm=get_challenge_usage_by_llm(),
+            max_single_call_total_tokens=_max_single,
+        ),
     )
 
     if solution_grids:
@@ -976,6 +995,7 @@ async def solve_challenges(
     config: RunConfig,
     attempts_path: Path,
     temp_attempts_dir: Path,
+    run_dir: Path,
 ) -> tuple[float, TokenUsage, int]:
     # Create semaphore to limit concurrent tasks
     semaphore = MonitoredSemaphore(config.max_concurrent_tasks, name="run_semaphore")
@@ -993,6 +1013,7 @@ async def solve_challenges(
                     config=config,
                     attempts_path=attempts_path,
                     temp_attempts_dir=temp_attempts_dir,
+                    run_dir=run_dir,
                 )
             except Exception as e:
                 error_kwargs: dict[str, T.Any] = {
@@ -1087,6 +1108,12 @@ async def run_from_json(
     if not os.environ.get("LOG_FILE"):
         configure_local_log_path(results_run_dir / "arc.log")
 
+    # Where the agy provider drops a copy of each conversation transcript so
+    # `evaluate_solutions` can scan them for tool use / network access.
+    os.environ.setdefault(
+        "AGY_TRANSCRIPT_DIR", str(results_run_dir / "agy_transcripts")
+    )
+
     if attempts_path is None and temp_attempts_dir is None:
         attempts_path, temp_attempts_dir = _attempts_layout_for_run_dir(
             results_run_dir, challenges_path
@@ -1172,15 +1199,31 @@ async def run_from_json(
             solution_grids_list=solutions_list,
             config=config,
             temp_attempts_dir=temp_attempts_dir,
+            run_dir=results_run_dir,
         )
         log.info("Run completed", final_scores=final_scores)
 
-    token_summary = (
-        f"Tokens: total={run_usage.total_tokens:,} "
-        f"in={run_usage.input_tokens:,} out={run_usage.output_tokens:,} "
-        f"reasoning={run_usage.reasoning_tokens:,} cached={run_usage.cached_tokens:,}\n"
-        f"Max single call: {run_max_single:,}"
-    )
+    # Aggregate from the persisted per-task usage files so the summary covers
+    # tasks carried over from a resumed run, not just this session's.
+    usage_summary = summarize_run_usage(results_run_dir)
+    if usage_summary is not None:
+        total_usage = usage_summary.total_usage
+        token_summary = (
+            f"Tokens: total={total_usage.total_tokens:,} "
+            f"in={total_usage.input_tokens:,} out={total_usage.output_tokens:,} "
+            f"reasoning={total_usage.reasoning_tokens:,} "
+            f"cached={total_usage.cached_tokens:,}\n"
+            f"Max single call: {run_max_single:,}\n"
+            f"Total cost: ${usage_summary.total_cost:.2f}"
+        )
+    else:
+        token_summary = (
+            f"Tokens: total={run_usage.total_tokens:,} "
+            f"in={run_usage.input_tokens:,} out={run_usage.output_tokens:,} "
+            f"reasoning={run_usage.reasoning_tokens:,} "
+            f"cached={run_usage.cached_tokens:,}\n"
+            f"Max single call: {run_max_single:,}"
+        )
     print(f"\n{'=' * 50}")
     print(f"Run {run_id} finished")
     print(f"Score: {final_scores * 100:.2f}%")

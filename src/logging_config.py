@@ -5,7 +5,7 @@ import os
 import time
 import uuid
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -111,6 +111,7 @@ def _log_to_local_file(level: str, message: str, **kwargs: Any) -> None:
 class TaskLogContext:
     task_id: str
     cumulative: TokenUsage
+    by_llm: dict[str, TokenUsage] = field(default_factory=dict)
     max_single_call_total_tokens: int = 0
 
 
@@ -132,11 +133,14 @@ def get_task_id() -> str | None:
     return ctx.task_id if ctx else None
 
 
-def record_llm_token_usage(usage: TokenUsage) -> None:
+def record_llm_token_usage(usage: TokenUsage, llm: str | None = None) -> None:
     ctx = current_task_log.get()
     if ctx is None:
         return
     ctx.cumulative += usage
+    if llm is not None:
+        ctx.by_llm.setdefault(llm, TokenUsage())
+        ctx.by_llm[llm] += usage
     ct = usage.total_tokens
     if ct > ctx.max_single_call_total_tokens:
         ctx.max_single_call_total_tokens = ct
@@ -147,6 +151,14 @@ def get_challenge_token_totals() -> tuple[TokenUsage, int]:
     if ctx is None:
         return TokenUsage(), 0
     return ctx.cumulative, ctx.max_single_call_total_tokens
+
+
+def get_challenge_usage_by_llm() -> dict[str, TokenUsage]:
+    ctx = current_task_log.get()
+    if ctx is None:
+        return {}
+    # Return copies so callers can persist a stable snapshot.
+    return {llm: usage.model_copy() for llm, usage in ctx.by_llm.items()}
 
 
 def merge_run_token_usage(

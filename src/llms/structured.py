@@ -25,6 +25,7 @@ from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
 from xai_sdk.chat import assistant, image, system, user
 
 from src.async_utils.semaphore_monitor import MonitoredSemaphore
+from src.llms.agy import _get_next_structure_agy
 from src.llms.clients import (
     anthropic_client,
     copilot_client,
@@ -89,6 +90,7 @@ def retry_with_backoff(
                 except Exception as exc:  # noqa: BLE001
                     duration = time.time() - start
                     msg = str(exc)
+                    exc_type = type(exc).__name__
 
                     # ---- simple, readable retry classification ----
                     retryable = (
@@ -102,7 +104,14 @@ def retry_with_backoff(
                         or "SAFETY_CHECK_TYPE_BIO" in msg
                         or "524" in msg  # Cloudflare timeout
                         or "timeout" in msg.lower()
-                        or "ServerError" in msg
+                        # google.genai raises ServerError for 5xx; its str() is
+                        # "500 INTERNAL. {...}" and does NOT contain "ServerError",
+                        # so classify by exception type, not message text.
+                        or exc_type == "ServerError"
+                        or "INTERNAL" in msg.upper()
+                        or "500" in msg
+                        or "502" in msg
+                        or "503" in msg
                         or "Provider returned error" in msg
                         or "Context size has been exceeded." in msg
                     )
@@ -449,6 +458,20 @@ IMPORTANT: Give the output in a valid JSON string (it should not be wrapped in m
     return final_messages
 
 
+def _strip_json_fence(text: str) -> str:
+    """Extract the JSON object from text Gemma wrapped in ```json ... ``` or prose.
+
+    Gemma occasionally ignores the response schema and emits the (valid) JSON
+    object surrounded by a markdown fence and/or stray text. The object spans the
+    first ``{`` to the last ``}``, so slice that out and reparse.
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        return text[start : end + 1]
+    return text.strip()
+
+
 def update_messages_gemini(messages: list[dict]) -> str:
     """Convert messages to a single prompt string for Gemini."""
     parts = []
@@ -744,6 +767,7 @@ async def _get_next_structure_gemini(
 
     config.thinking_config = ThinkingConfig(thinking_level=ThinkingLevel.HIGH)
 
+
     response = await gemini_client.aio.models.generate_content(
         model=model_id,
         contents=prompt,
@@ -760,7 +784,12 @@ async def _get_next_structure_gemini(
     if not content:
         raise Exception("Empty response from Gemini model")
 
-    output = structure.model_validate_json(content)
+    try:
+        output = structure.model_validate_json(content)
+    except ValueError:
+        # Gemma occasionally ignores the schema and wraps valid JSON in a
+        # ```json ... ``` markdown fence; strip it and reparse before retrying.
+        output = structure.model_validate_json(_strip_json_fence(content))
     return output, token_usage
 
 
@@ -839,12 +868,13 @@ def _run_provider_structure_function(
         "anthropic": _get_next_structure_anthropic,
         "xai": _get_next_structure_xai,
         "deepseek": _get_next_structure_deepseek,
-        "google": _get_next_structure_gemini,
+        "gemini": _get_next_structure_gemini,
         "gateway": _get_next_structure_pydantic_gateway,
         "kilo": _get_next_structure_kilo,
         "lmstudio": _get_next_structure_lmstudio,
         "openrouter": _get_next_structure_openrouter,
         "groq": _get_next_structure_groq,
+        "agy": _get_next_structure_agy,
     }[provider](structure, model_id, messages)
 
 
@@ -871,10 +901,11 @@ async def get_next_structure(
             raw_response = result.model_dump()
         log.info(
             "API call completed",
+            llm=llm,
             duration_seconds=duration,
             token_usage=token_usage.model_dump(),
             response=raw_response,
         )
 
-        record_llm_token_usage(token_usage)
+        record_llm_token_usage(token_usage, llm)
         return result

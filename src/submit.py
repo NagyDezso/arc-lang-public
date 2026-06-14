@@ -4,11 +4,70 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from pydantic import BaseModel, TypeAdapter
 
 from src.models import GRID
+from src.usage import print_run_usage
+
+# Patterns matched against saved agy transcripts via re.search. Any hit means
+# the model reached for tools / network / secrets despite the no-tools clamp.
+_SUSPICIOUS_PATTERNS = [
+    # Any non-empty tool_calls array in the transcript JSONL.
+    r'"tool_calls":\s*\[\s*\{',
+    # Specific high-risk tool families.
+    r'"name":"search_web"',
+    r'"name":"web_search"',
+    r'"name":"read_url',
+    r'"name":"browser_',
+    r'"name":"antigravity_browser"',
+    r'"name":"run_command"',
+    r'"name":"view_file"',
+    r'"name":"write_to_file"',
+    r'"name":"edit_file"',
+    r"vertexaisearch",
+    # Secret / env access attempts.
+    r"GEMINI_API_KEY",
+    r"GOOGLE_API_KEY",
+    r"ANTHROPIC_API_KEY",
+    r"OPENAI_API_KEY",
+    r"DEEPMIND_API_KEY",
+    r"ANTIGRAVITY_OAUTH_REFRESH_TOKEN",
+    r"os\.environ",
+    r"/proc/self/environ",
+    r"/proc/\d+/environ",
+]
+_SUSPICIOUS_REGEXES = [re.compile(p) for p in _SUSPICIOUS_PATTERNS]
+
+
+def check_transcripts(transcripts_dir: Path) -> list[str]:
+    """Scan saved agy transcripts for tool use, network access, or env probing.
+
+    Returns one warning string per (file, first matching pattern). Empty list
+    means clean.
+    """
+    warnings: list[str] = []
+    if not transcripts_dir.is_dir():
+        return warnings
+
+    for transcript_file in sorted(transcripts_dir.rglob("*.jsonl")):
+        rel = transcript_file.relative_to(transcripts_dir)
+        try:
+            text = transcript_file.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            warnings.append(f"[{rel}] unreadable transcript: {exc}")
+            continue
+        for regex in _SUSPICIOUS_REGEXES:
+            match = regex.search(text)
+            if match is not None:
+                warnings.append(
+                    f'[{rel}] suspicious pattern "{regex.pattern}" at index '
+                    f"{match.start()}"
+                )
+                break
+    return warnings
 
 
 class ChallengeSolution(BaseModel):
@@ -67,6 +126,20 @@ def evaluate_solutions(
         print("\n--- Failed task ids ---")
         print(", ".join(failed_task_ids))
 
+    # If the run used the agy provider, the adapter saved each conversation
+    # transcript under results/<run>/agy_transcripts. Scan them for tool use
+    # or other rule-breaking before declaring the run clean.
+    run_dir = attempts_solutions_path.resolve().parent.parent
+    print_run_usage(run_dir)
+    transcripts_dir = run_dir / "agy_transcripts"
+    transcript_warnings = check_transcripts(transcripts_dir)
+    if transcript_warnings:
+        print(f"\n=== Suspicious transcripts ({len(transcript_warnings)}) ===")
+        for w in transcript_warnings:
+            print(w)
+    elif transcripts_dir.is_dir():
+        print("\n=== Transcript check: clean ===")
+
 
 def _project_root_from_results_dir(results_dir: Path) -> Path:
     """results/<run_id> -> repo root."""
@@ -78,7 +151,7 @@ def _project_root_from_results_dir(results_dir: Path) -> Path:
 
 def _default_truth_path(results_dir: Path) -> Path:
     root = _project_root_from_results_dir(results_dir)
-    return root / "data" / "arc-prize-2024" / "arc-agi_evaluation_solutions.json"
+    return root / "data" / "arc-prize-2025" / "arc-agi_evaluation_solutions.json"
 
 
 def resolve_aggregate_attempts(results_dir: Path, attempts: Path | None) -> Path:

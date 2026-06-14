@@ -29,6 +29,7 @@ class ModelPricing(BaseModel):
     prompt_tokens: float
     reasoning_tokens: float
     completion_tokens: float
+    cached_tokens: float | None = None
 
 
 MODEL_PRICING_D: dict[str, ModelPricing] = {
@@ -107,6 +108,11 @@ MODEL_PRICING_D: dict[str, ModelPricing] = {
         reasoning_tokens=15_000 / 1_000_000,
         completion_tokens=15_000 / 1_000_000,
     ),
+    "gemini/gemma-4-31b-it": ModelPricing(
+        prompt_tokens=0.12 / 1_000_000,
+        reasoning_tokens=0.35 / 1_000_000,
+        completion_tokens=0,
+    ),
     "gateway/google-vertex:gemini-3-pro-preview": ModelPricing(
         prompt_tokens=2_500 / 1_000_000,
         reasoning_tokens=15_000 / 1_000_000,
@@ -121,6 +127,23 @@ MODEL_PRICING_D: dict[str, ModelPricing] = {
         prompt_tokens=0.0,
         reasoning_tokens=0.0,
         completion_tokens=0.0,
+    ),
+    "agy/gemini-3.5-flash": ModelPricing(
+        prompt_tokens=1.5 / 1_000_000,
+        reasoning_tokens=9 / 1_000_000,
+        completion_tokens=9 / 1_000_000,
+        cached_tokens=0.0,
+    ),
+    "agy/gemini-3.5-flash-high": ModelPricing(
+        prompt_tokens=1.5 / 1_000_000,
+        reasoning_tokens=9 / 1_000_000,
+        completion_tokens=9 / 1_000_000,
+        cached_tokens=0.0,
+    ),
+    "agy/claude-sonnet-4-6": ModelPricing(
+        prompt_tokens=3_000 / 1_000_000,
+        reasoning_tokens=15_000 / 1_000_000,
+        completion_tokens=15_000 / 1_000_000,
     ),
 }
 
@@ -145,8 +168,8 @@ class TokenUsage(BaseModel):
         return cls(
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            reasoning_tokens=usage.input_tokens_details.cached_tokens,
-            cached_tokens=usage.output_tokens_details.reasoning_tokens,
+            reasoning_tokens=usage.output_tokens_details.reasoning_tokens,
+            cached_tokens=usage.input_tokens_details.cached_tokens,
             total_tokens=usage.total_tokens,
         )
 
@@ -195,6 +218,7 @@ class TokenUsage(BaseModel):
         return cls(
             input_tokens=_safe_int(meta.prompt_token_count),
             output_tokens=_safe_int(meta.candidates_token_count),
+            reasoning_tokens=_safe_int(meta.thoughts_token_count),
             cached_tokens=_safe_int(meta.cached_content_token_count),
             total_tokens=_safe_int(meta.total_token_count),
         )
@@ -222,8 +246,14 @@ class TokenUsage(BaseModel):
         pricing = MODEL_PRICING_D.get(llm)
         if pricing is None:
             return 0.0
+        cached_rate = (
+            pricing.cached_tokens
+            if pricing.cached_tokens is not None
+            else pricing.prompt_tokens
+        )
         return round(
             self.input_tokens * pricing.prompt_tokens
+            + self.cached_tokens * cached_rate
             + self.reasoning_tokens * pricing.reasoning_tokens
             + self.output_tokens * pricing.completion_tokens,
             2,
