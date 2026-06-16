@@ -26,6 +26,7 @@ from xai_sdk.chat import assistant, image, system, user
 
 from src.async_utils.semaphore_monitor import MonitoredSemaphore
 from src.llms.agy import _get_next_structure_agy
+from src.llms.claude_code import _get_next_structure_claudecode
 from src.llms.clients import (
     anthropic_client,
     copilot_client,
@@ -856,6 +857,11 @@ async def _get_next_structure_pydantic_gateway(
     return result.output, token_usage
 
 
+# The Claude Code provider lives in its own module (to avoid a circular import),
+# so it can't carry the @retry_with_backoff decorator at definition; wrap it here.
+_claudecode_with_retry = retry_with_backoff(max_retries=5)(_get_next_structure_claudecode)
+
+
 def _run_provider_structure_function(
     provider: str,
     structure: type[BMType],
@@ -875,6 +881,7 @@ def _run_provider_structure_function(
         "openrouter": _get_next_structure_openrouter,
         "groq": _get_next_structure_groq,
         "agy": _get_next_structure_agy,
+        "claudecode": _claudecode_with_retry,
     }[provider](structure, model_id, messages)
 
 

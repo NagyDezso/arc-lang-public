@@ -108,10 +108,10 @@ MODEL_PRICING_D: dict[str, ModelPricing] = {
         reasoning_tokens=15_000 / 1_000_000,
         completion_tokens=15_000 / 1_000_000,
     ),
-    "gemini/gemma-4-31b-it": ModelPricing(
+    "lmstudio/gemma-4-31b-it": ModelPricing(
         prompt_tokens=0.12 / 1_000_000,
         reasoning_tokens=0.35 / 1_000_000,
-        completion_tokens=0,
+        completion_tokens=0.35 / 1_000_000,
     ),
     "gateway/google-vertex:gemini-3-pro-preview": ModelPricing(
         prompt_tokens=2_500 / 1_000_000,
@@ -144,6 +144,24 @@ MODEL_PRICING_D: dict[str, ModelPricing] = {
         prompt_tokens=3_000 / 1_000_000,
         reasoning_tokens=15_000 / 1_000_000,
         completion_tokens=15_000 / 1_000_000,
+    ),
+    "claudecode/sonnet": ModelPricing(
+        prompt_tokens=3_000 / 1_000_000,
+        reasoning_tokens=15_000 / 1_000_000,
+        completion_tokens=15_000 / 1_000_000,
+        cached_tokens=300 / 1_000_000,
+    ),
+    "claudecode/opus": ModelPricing(
+        prompt_tokens=15_000 / 1_000_000,
+        reasoning_tokens=75_000 / 1_000_000,
+        completion_tokens=75_000 / 1_000_000,
+        cached_tokens=1_500 / 1_000_000,
+    ),
+    "claudecode/haiku": ModelPricing(
+        prompt_tokens=1_000 / 1_000_000,
+        reasoning_tokens=5_000 / 1_000_000,
+        completion_tokens=5_000 / 1_000_000,
+        cached_tokens=100 / 1_000_000,
     ),
 }
 
