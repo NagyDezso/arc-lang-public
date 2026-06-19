@@ -59,6 +59,8 @@ _STATUSLINE_SCRIPT_NAME = "statusline-usage.sh"
 _MODEL_DISPLAY_NAMES = {
     "gemini-3.5-flash": "Gemini 3.5 Flash (Medium)",
     "gemini-3.5-flash-high": "Gemini 3.5 Flash (High)",
+    "gemini-3.1-pro": "Gemini 3.1 Pro",
+    "gemini-3.1-pro-high": "Gemini 3.1 Pro (High)",
     "claude-sonnet-4-6": "Claude Sonnet 4.6 (Thinking)",
 }
 
@@ -121,6 +123,28 @@ _PER_CALL_DATA_NAMES = frozenset({
 })
 
 
+def _link_readonly(target: Path, link: Path) -> None:
+    """Point ``link`` at the read-only resource ``target``.
+
+    Prefers a symlink. On Windows, creating a symlink needs elevated privileges
+    or Developer Mode (``OSError`` WinError 1314); there we fall back to a
+    directory junction (no privilege required) for directories and a copy for
+    files, so unprivileged accounts can still run agy.
+    """
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+        return
+    except OSError:
+        if os.name != "nt":
+            raise
+    if target.is_dir():
+        import _winapi
+
+        _winapi.CreateJunction(os.path.abspath(target), os.path.abspath(link))
+    else:
+        shutil.copy2(target, link)
+
+
 def _init_home_for_call(home: Path) -> Path:
     """Build a fresh temp ``$HOME`` that agy can run in without colliding with
     concurrent calls.
@@ -138,7 +162,7 @@ def _init_home_for_call(home: Path) -> Path:
 
     real_cache = real_home / ".cache"
     if real_cache.exists():
-        (home / ".cache").symlink_to(real_cache)
+        _link_readonly(real_cache, home / ".cache")
 
     home_gemini = home / ".gemini"
     home_gemini.mkdir()
@@ -147,7 +171,7 @@ def _init_home_for_call(home: Path) -> Path:
         for item in real_gemini.iterdir():
             if item.name == "antigravity-cli":
                 continue
-            (home_gemini / item.name).symlink_to(item)
+            _link_readonly(item, home_gemini / item.name)
 
     home_agy = home_gemini / "antigravity-cli"
     home_agy.mkdir()
@@ -155,7 +179,7 @@ def _init_home_for_call(home: Path) -> Path:
         for item in _DATA_DIR.iterdir():
             if item.name in _PER_CALL_DATA_NAMES:
                 continue
-            (home_agy / item.name).symlink_to(item)
+            _link_readonly(item, home_agy / item.name)
 
     return home_agy
 
@@ -189,7 +213,11 @@ def _setup_data_dir(data_dir: Path, model_id: str) -> None:
     )
     statusline_script.chmod(0o755)
 
-    display_name = _MODEL_DISPLAY_NAMES.get(model_id, model_id)
+    display_name = _MODEL_DISPLAY_NAMES.get(model_id)
+    if display_name is None:
+        # Raw id as the display name makes agy silently use its default model.
+        log.warn("agy_unmapped_model_display_name", model_id=model_id)
+        display_name = model_id
     (data_dir / "settings.json").write_text(
         json.dumps(
             {
@@ -274,25 +302,41 @@ def _strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
 
 
-def _probe_quota_reset_seconds(log_path: Path) -> tuple[int | None, str]:
-    """Parse ``Resets in Xh Ym Zs`` out of agy's RESOURCE_EXHAUSTED log line."""
-    try:
-        content = log_path.read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
-        return None, f"(log file not found: {log_path})"
-    except OSError as exc:
-        return None, f"(failed to read log {log_path}: {exc})"
+def _probe_quota_reset_seconds(log_dir: Path) -> tuple[int | None, str]:
+    """Parse ``Resets in Xh Ym Zs`` out of agy's RESOURCE_EXHAUSTED log line.
 
-    for line in content.splitlines():
-        if "RESOURCE_EXHAUSTED" not in line:
+    The reset window lands in agy's own ``cli-<timestamp>.log``, not the
+    ``--log-file`` orchestrator log, so scan every ``*.log`` in the dir
+    (newest first) and take the first line that exposes a window.
+    """
+    try:
+        log_files = sorted(
+            log_dir.glob("*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError as exc:
+        return None, f"(failed to list log dir {log_dir}: {exc})"
+    if not log_files:
+        return None, f"(no log files in {log_dir})"
+
+    tails: list[str] = []
+    for path in log_files:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             continue
-        match = _QUOTA_RESET_RE.search(line)
-        if match:
-            hours = int(match.group(1) or 0)
-            minutes = int(match.group(2) or 0)
-            seconds = int(match.group(3) or 0)
-            return hours * 3600 + minutes * 60 + seconds, line.strip()
-    return None, content[-4096:]
+        for line in content.splitlines():
+            if "RESOURCE_EXHAUSTED" not in line:
+                continue
+            match = _QUOTA_RESET_RE.search(line)
+            if match:
+                hours = int(match.group(1) or 0)
+                minutes = int(match.group(2) or 0)
+                seconds = int(match.group(3) or 0)
+                return hours * 3600 + minutes * 60 + seconds, line.strip()
+        tails.append(f"--- {path.name} ---\n{content[-2048:]}")
+    return None, "\n".join(tails)[-4096:]
 
 
 def _collect_usage(data_dir: Path) -> TokenUsage:
@@ -377,6 +421,36 @@ def _save_transcripts(new_transcripts: list[tuple[Path, list[str]]]) -> None:
         suffix = uuid.uuid4().hex[:8]
         dest = dest_dir / f"{safe_task}__{conv_id}__{suffix}.jsonl"
         dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+_ASSISTANT_EVENT_TYPES = frozenset({"PLANNER_RESPONSE"})
+
+
+def _extract_answer_text(new_transcripts: list[tuple[Path, list[str]]]) -> str:
+    """Pull the model's final assistant text out of the transcript.
+
+    ``agy --print`` renders its answer to the console (CONOUT$), not to the
+    stdout fd, so on Windows stdout comes back empty even on success. The
+    transcript JSONL is the reliable, platform-independent source: the model's
+    reply is the ``content`` of a ``PLANNER_RESPONSE`` event. Returns the last
+    non-empty assistant content across all transcripts (``_collect_new_transcripts``
+    sorts them oldest-first, so the last hit is the final answer), or ``""``.
+    """
+    answer = ""
+    for _path, lines in new_transcripts:
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("type") not in _ASSISTANT_EVENT_TYPES:
+                continue
+            content = obj.get("content")
+            if isinstance(content, str) and content.strip():
+                answer = content
+    return answer
 
 
 def _count_tool_calls(new_transcripts: list[tuple[Path, list[str]]]) -> int:
@@ -482,7 +556,9 @@ async def _get_next_structure_agy(
                 and elapsed < _QUOTA_SILENT_FAILURE_S
             )
             if silent:
-                reset_seconds, probe_debug = _probe_quota_reset_seconds(log_path)
+                reset_seconds, probe_debug = _probe_quota_reset_seconds(
+                    log_path.parent
+                )
                 if reset_seconds is None:
                     reset_seconds = _QUOTA_FALLBACK_RESET_S
                     log.warn(
@@ -513,27 +589,31 @@ async def _get_next_structure_agy(
                     elapsed_seconds=elapsed,
                 )
 
-            if not stdout.strip():
+            answer = _extract_answer_text(new_transcripts) or stdout
+
+            if not answer.strip():
                 last_error = RuntimeError(
-                    f"agy returned no stdout (stderr={stderr[:200]!r})"
+                    f"agy produced no answer (stdout empty, no PLANNER_RESPONSE "
+                    f"in transcript; stderr={stderr[:200]!r})"
                 )
                 if parse_attempts >= _MAX_PARSE_RETRIES:
                     raise last_error
                 parse_attempts += 1
                 log.warn(
-                    "agy_empty_stdout_retry",
+                    "agy_empty_answer_retry",
                     attempt=parse_attempts,
+                    transcripts=len(new_transcripts),
                     stderr_head=stderr[:200],
                 )
                 continue
 
             try:
-                payload = _extract_json_payload(stdout)
+                payload = _extract_json_payload(answer)
                 output = structure.model_validate_json(payload)
             except Exception as exc:
                 last_error = RuntimeError(
                     f"failed to parse agy reply as {structure.__name__}: {exc}; "
-                    f"stdout head={stdout[:200]!r}"
+                    f"answer head={answer[:200]!r}"
                 )
                 if parse_attempts >= _MAX_PARSE_RETRIES:
                     raise last_error
@@ -542,7 +622,7 @@ async def _get_next_structure_agy(
                     "agy_parse_failed_retry",
                     attempt=parse_attempts,
                     error=str(exc)[:200],
-                    stdout_head=stdout[:200],
+                    answer_head=answer[:200],
                 )
                 continue
 
